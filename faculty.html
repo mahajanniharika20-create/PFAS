@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Faculty Portal - PFAS</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+</head>
+<body class="bg-light">
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark px-4 py-3 mb-4 shadow">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="#"><i class="bi bi-mortarboard-fill me-2 text-primary"></i>PFAS Faculty Portal</a>
+            <div class="d-flex align-items-center gap-3">
+                <span class="text-light small">Welcome, <strong>{{ faculty.name }}</strong></span>
+                <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm px-3"><i class="bi bi-box-arrow-right me-1"></i> Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container pb-5">
+        
+        <!-- Header Profile -->
+        <div class="card p-4 mb-4 shadow-sm border-0">
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <h3 class="fw-bold mb-1">{{ faculty.name }}</h3>
+                    <p class="text-muted mb-0">
+                        Department: <strong>{{ faculty.department }}</strong> &nbsp;|&nbsp; 
+                        Subject: <strong>{{ faculty.assigned_subject or 'Unassigned' }}</strong> &nbsp;|&nbsp;
+                        Domain: <strong>{{ faculty.domain or 'General' }}</strong>
+                    </p>
+                </div>
+                <div class="col-md-4 text-md-end mt-2 mt-md-0">
+                    <span class="badge bg-primary fs-6 px-3 py-2">Workload: {{ faculty.weekly_hours }} hrs/week</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Weekly Timetable -->
+        <div class="card p-4 mb-4 shadow-sm border-0">
+            <h5 class="fw-bold mb-3"><i class="bi bi-calendar-week-fill text-primary me-2"></i>My Weekly Schedule</h5>
+            <div class="table-responsive">
+                <table class="table table-bordered text-center align-middle mb-0">
+                    <thead class="table-primary">
+                        <tr>
+                            <th style="width: 18%;">Time</th>
+                            <th>Mon</th>
+                            <th>Tue</th>
+                            <th>Wed</th>
+                            <th>Thu</th>
+                            <th>Fri</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for slot in schedule %}
+                        <tr>
+                            <td class="fw-bold bg-light">{{ slot.time }}</td>
+                            <td class="{% if slot.Mon != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted{% endif %}">{{ slot.Mon }}</td>
+                            <td class="{% if slot.Tue != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted{% endif %}">{{ slot.Tue }}</td>
+                            <td class="{% if slot.Wed != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted{% endif %}">{{ slot.Wed }}</td>
+                            <td class="{% if slot.Thu != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted{% endif %}">{{ slot.Thu }}</td>
+                            <td class="{% if slot.Fri != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted{% endif %}">{{ slot.Fri }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="row g-4">
+            <!-- Apply for Leave & Request Substitute -->
+            <div class="col-md-6">
+                <div class="card p-4 shadow-sm border-0 h-100">
+                    <h5 class="fw-bold mb-3"><i class="bi bi-calendar-minus-fill text-danger me-2"></i>Apply Leave & Nominate Substitute</h5>
+                    <form method="POST" action="{{ url_for('apply_leave') }}">
+                        <input type="hidden" name="faculty_id" value="{{ faculty.id }}">
+                        <input type="hidden" name="faculty_name" value="{{ faculty.name }}">
+                        
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Leave Date</label>
+                            <input type="date" name="leave_date" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Reason for Leave</label>
+                            <input type="text" name="reason" class="form-control" placeholder="e.g., Medical / Conference" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Select Substitute Faculty</label>
+                            <select name="substitute_name" class="form-select" required>
+                                <option value="">-- Choose Substitute --</option>
+                                {% for f in all_faculty %}
+                                <option value="{{ f.name }}">{{ f.name }} ({{ f.department }})</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-danger w-100 fw-bold">Submit Leave Request</button>
+                    </form>
+
+                    <hr class="my-4">
+                    <h6 class="fw-bold text-secondary">My Recent Leave Requests</h6>
+                    <ul class="list-group list-group-flush small">
+                        {% for l in leaves %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                            <div>
+                                <strong>{{ l.leave_date }}</strong> - Sub: {{ l.substitute_name }}
+                            </div>
+                            <span class="badge {% if l.status == 'Approved' %}bg-success{% elif l.status == 'Rejected' %}bg-danger{% else %}bg-warning text-dark{% endif %}">
+                                {{ l.status }}
+                            </span>
+                        </li>
+                        {% else %}
+                        <li class="list-group-item text-muted px-0">No past leave applications.</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Subject & Slot Preferences Form -->
+            <div class="col-md-6">
+                <div class="card p-4 shadow-sm border-0 h-100">
+                    <h5 class="fw-bold mb-3"><i class="bi bi-sliders text-success me-2"></i>Select Preferences for Next Term</h5>
+                    <form method="POST" action="{{ url_for('submit_preference') }}">
+                        <input type="hidden" name="faculty_id" value="{{ faculty.id }}">
+                        <input type="hidden" name="faculty_name" value="{{ faculty.name }}">
+
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Preferred Subject</label>
+                            <input type="text" name="preferred_subject" class="form-control" placeholder="e.g., Machine Learning / Algorithms" value="{{ preference.preferred_subject if preference else '' }}" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Preferred Timing Slot</label>
+                            <select name="preferred_time_slot" class="form-select" required>
+                                <option value="Morning (09:00 AM - 12:15 PM)" {% if preference and preference.preferred_time_slot == 'Morning (09:00 AM - 12:15 PM)' %}selected{% endif %}>Morning (09:00 AM - 12:15 PM)</option>
+                                <option value="Afternoon (01:15 PM - 04:15 PM)" {% if preference and preference.preferred_time_slot == 'Afternoon (01:15 PM - 04:15 PM)' %}selected{% endif %}>Afternoon (01:15 PM - 04:15 PM)</option>
+                                <option value="No Preference" {% if preference and preference.preferred_time_slot == 'No Preference' %}selected{% endif %}>No Preference</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-success w-100 fw-bold">Save Preferences</button>
+                    </form>
+
+                    {% if preference %}
+                    <div class="alert alert-info mt-4 mb-0 py-2 small">
+                        <i class="bi bi-check-circle-fill me-1"></i> Current saved preference: <strong>{{ preference.preferred_subject }}</strong> ({{ preference.preferred_time_slot }})
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
