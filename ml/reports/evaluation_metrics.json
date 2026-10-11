@@ -4,8 +4,8 @@
   "rows": 6000,
   "train_rows": 4800,
   "test_rows": 1200,
-  "mae": 10.8012,
-  "rmse": 13.3775,
-  "r2": 0.5248,
+  "mae": 10.7992,
+  "rmse": 13.3763,
+  "r2": 0.5249,
   "warning": "Synthetic data and synthetic target formula; metrics do not establish real-world performance."
 }
