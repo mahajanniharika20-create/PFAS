@@ -1,9 +1,13 @@
+import os
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 from flask_sqlalchemy import SQLAlchemy
 
-app = Flask(__name__)
+basedir = os.path.abspath(os.path.dirname(__file__))
+default_db_path = os.path.join(basedir, 'pfas.db')
+
+app = Flask(__name__, template_folder='.')
 app.config['SECRET_KEY'] = 'pfas-secret-key-123'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pfas.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('PFAS_DATABASE_URI', f'sqlite:///{default_db_path}')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -165,13 +169,15 @@ def faculty_dashboard():
     my_leaves = LeaveRequest.query.filter_by(faculty_id=faculty_member.id).all()
     my_preference = Preference.query.filter_by(faculty_id=faculty_member.id).first()
 
-    weekly_schedule = [
-        {"time": "09:00 AM - 10:00 AM", "Mon": (faculty_member.assigned_subject or 'Class') + " (Sec " + (faculty_member.section or 'A') + ")", "Tue": "Lab Session", "Wed": faculty_member.assigned_subject or 'Class', "Thu": "Free", "Fri": faculty_member.assigned_subject or 'Class'},
-        {"time": "10:00 AM - 11:00 AM", "Mon": "Free", "Tue": faculty_member.assigned_subject or 'Class', "Wed": "Free", "Thu": faculty_member.assigned_subject or 'Class', "Fri": "Lab Session"},
-        {"time": "11:15 AM - 12:15 PM", "Mon": faculty_member.assigned_subject or 'Class', "Tue": "Free", "Wed": faculty_member.assigned_subject or 'Class', "Thu": "Free", "Fri": "Free"},
-        {"time": "01:15 PM - 02:15 PM", "Mon": "Departmental Meeting", "Tue": "Free", "Wed": "Lab Session", "Thu": faculty_member.assigned_subject or 'Class', "Fri": "Free"},
-        {"time": "02:15 PM - 03:15 PM", "Mon": "Free", "Tue": faculty_member.assigned_subject or 'Class', "Wed": "Free", "Thu": "Free", "Fri": faculty_member.assigned_subject or 'Class'},
-    ]
+    # Retrieve faculty member's validated schedule from generated timetable
+    timetable_res = get_or_generate_timetable()
+    weekly_schedule = []
+    for item in timetable_res.get('master_grid', []):
+        fac = item.get('faculty')
+        fac_id = getattr(fac, 'id', None) or (fac.get('id') if isinstance(fac, dict) else None)
+        if fac_id == faculty_member.id:
+            weekly_schedule = item.get('slots', [])
+            break
 
     return render_template(
         'faculty.html',
@@ -179,7 +185,8 @@ def faculty_dashboard():
         schedule=weekly_schedule,
         all_faculty=all_faculty,
         leaves=my_leaves,
-        preference=my_preference
+        preference=my_preference,
+        timetable_status=timetable_res.get('status'),
     )
 
 # Apply for Leave & Request Substitute
@@ -227,11 +234,163 @@ def submit_preference():
     db.session.commit()
     flash('Preferences updated successfully!')
     return redirect(url_for('faculty_dashboard'))
-# 5. MASTER TIMETABLE / SCHEDULE (All Faculty Combined)
-@app.route('/schedule')
-def master_schedule():
+from ml import generate_timetable, format_master_grid, validate_timetable
+
+# --- INSTITUTIONAL CURRICULUM & WORKLOAD CONTRACT ---
+# Verified course catalog with accredited lecture hours, lab hours, and target sections.
+# Courses with unverified hours or missing data will NOT be guessed; they remain unscheduled.
+INSTITUTIONAL_COURSE_CATALOG = {
+    "Data Structures": {
+        "subject_id": "CS201",
+        "domain": "Algorithms",
+        "sections": ["A"],
+        "lecture_hours": 3,
+        "lab_hours": 2,
+        "required_qualification": "Algorithms",
+    },
+    "Machine Learning": {
+        "subject_id": "CS301",
+        "domain": "AI/ML",
+        "sections": ["B"],
+        "lecture_hours": 3,
+        "lab_hours": 0,
+        "required_qualification": "AI/ML",
+    },
+    "Database Systems": {
+        "subject_id": "CS202",
+        "domain": "Database",
+        "sections": ["A"],
+        "lecture_hours": 3,
+        "lab_hours": 2,
+        "required_qualification": "Database",
+    },
+    "Deep Learning": {
+        "subject_id": "AI401",
+        "domain": "AI/ML",
+        "sections": ["A"],
+        "lecture_hours": 3,
+        "lab_hours": 0,
+        "required_qualification": "AI/ML",
+    },
+    "Computer Networks": {
+        "subject_id": "CS302",
+        "domain": "Networks",
+        "sections": ["C"],
+        "lecture_hours": 3,
+        "lab_hours": 2,
+        "required_qualification": "Networks",
+    },
+}
+
+# Verified Contractual Workload Caps (Max Weekly Teaching Hours).
+# Under institutional policy, confirmed workload caps per faculty.
+# If a faculty cap is unverified, allocation must be stopped for review.
+INSTITUTIONAL_FACULTY_CAPS = {
+    1: 14.0,  # Dr. M. K. Sharma: Cap 14 hrs
+    2: 14.0,  # Prof. R. V. Rao: Cap 14 hrs
+    3: 14.0,  # Dr. S. K. Gupta: Cap 14 hrs
+    4: 12.0,  # Prof. A. N. Reddy: Cap 12 hrs
+    5: 14.0,  # Dr. P. C. Mehta: Cap 14 hrs
+}
+
+TIMETABLE_SEED = 42
+_GENERATED_TIMETABLE_CACHE = None
+
+def invalidate_timetable_cache():
+    global _GENERATED_TIMETABLE_CACHE
+    _GENERATED_TIMETABLE_CACHE = None
+
+def get_or_generate_timetable(force_refresh=False):
+    global _GENERATED_TIMETABLE_CACHE
+    if _GENERATED_TIMETABLE_CACHE is not None and not force_refresh:
+        return _GENERATED_TIMETABLE_CACHE
+
     faculty_list = Faculty.query.all()
-    
+    active_leaves = LeaveRequest.query.filter(LeaveRequest.status.in_(['Approved', 'Pending'])).all()
+    faculty_on_leave_ids = {l.faculty_id for l in active_leaves}
+
+    preferences = Preference.query.all()
+    pref_by_fid = {p.faculty_id: p for p in preferences}
+
+    # Normalize faculty pool using confirmed institutional data
+    faculty_pool = []
+    for f in faculty_list:
+        is_on_leave = f.id in faculty_on_leave_ids
+        # Only use confirmed workload cap. Do not invent a fallback cap.
+        cap = INSTITUTIONAL_FACULTY_CAPS.get(f.id)
+        pref = pref_by_fid.get(f.id)
+
+        faculty_pool.append({
+            "id": f.id,
+            "faculty_id": f.id,
+            "name": f.name,
+            "faculty_name": f.name,
+            "department": f.department,
+            "assigned_subject": f.assigned_subject,
+            "section": f.section,
+            "year": f.year,
+            "weekly_hours": f.weekly_hours,
+            "domain": f.domain or f.assigned_subject,
+            "qualifications": f.domain or f.assigned_subject,
+            "workload": 0.0,
+            "current_weekly_hours": 0.0,
+            "max_workload": cap,
+            "weekly_hour_cap": cap,
+            "available": not is_on_leave,
+            "on_leave": is_on_leave,
+            "preferred_subject": pref.preferred_subject if pref else None,
+            "preferred_time_slot": pref.preferred_time_slot if pref else None,
+            "raw_record": {
+                "id": f.id,
+                "name": f.name,
+                "department": f.department,
+                "assigned_subject": f.assigned_subject,
+                "section": f.section,
+                "year": f.year,
+                "weekly_hours": f.weekly_hours,
+            },
+        })
+
+    # Assemble requirements from verified institutional course catalog
+    requirements = []
+    seen_requirements = set()
+    for f in faculty_list:
+        subj_name = f.assigned_subject
+        if not subj_name:
+            continue
+        catalog_entry = INSTITUTIONAL_COURSE_CATALOG.get(subj_name)
+        if catalog_entry:
+            for sec in catalog_entry["sections"]:
+                req_key = (catalog_entry["subject_id"], sec)
+                if req_key not in seen_requirements:
+                    seen_requirements.add(req_key)
+                    requirements.append({
+                        "subject_id": catalog_entry["subject_id"],
+                        "subject": subj_name,
+                        "name": subj_name,
+                        "domain": catalog_entry["domain"],
+                        "section": sec,
+                        "lecture_hours": catalog_entry["lecture_hours"],
+                        "lab_hours": catalog_entry["lab_hours"],
+                        "required_qualification": catalog_entry.get("required_qualification"),
+                        "preferred_faculty_id": f.id,
+                    })
+        else:
+            # Unverified course: do NOT invent hours or assume labs
+            req_key = (f"UNVERIFIED_{f.id}", f.section or "A")
+            if req_key not in seen_requirements:
+                seen_requirements.add(req_key)
+                requirements.append({
+                    "subject_id": f"UNVERIFIED_{f.id}",
+                    "subject": subj_name,
+                    "name": subj_name,
+                    "domain": f.domain or "",
+                    "section": f.section,
+                    "lecture_hours": None,
+                    "lab_hours": None,
+                    "required_qualification": None,
+                })
+
     time_slots = [
         "09:00 AM - 10:00 AM",
         "10:00 AM - 11:00 AM",
@@ -239,24 +398,47 @@ def master_schedule():
         "01:15 PM - 02:15 PM",
         "02:15 PM - 03:15 PM"
     ]
-    
-    # Build consolidated schedule grid per faculty
-    master_grid = []
-    for f in faculty_list:
-        subj = f.assigned_subject or "Class"
-        sec = f.section or "A"
-        master_grid.append({
-            "faculty": f,
-            "slots": [
-                {"time": "09:00 AM - 10:00 AM", "Mon": f"{subj} ({sec})", "Tue": "Lab", "Wed": subj, "Thu": "Free", "Fri": subj},
-                {"time": "10:00 AM - 11:00 AM", "Mon": "Free", "Tue": subj, "Wed": "Free", "Thu": subj, "Fri": "Lab"},
-                {"time": "11:15 AM - 12:15 PM", "Mon": subj, "Tue": "Free", "Wed": subj, "Thu": "Free", "Fri": "Free"},
-                {"time": "01:15 PM - 02:15 PM", "Mon": "Meeting", "Tue": "Free", "Wed": "Lab", "Thu": subj, "Fri": "Free"},
-                {"time": "02:15 PM - 03:15 PM", "Mon": "Free", "Tue": subj, "Wed": "Free", "Thu": "Free", "Fri": subj},
-            ]
-        })
 
-    return render_template('schedule.html', master_grid=master_grid, time_slots=time_slots)
+    gen_result = generate_timetable(
+        requirements=requirements,
+        faculty_pool=faculty_pool,
+        time_slots=time_slots,
+        seed=TIMETABLE_SEED,
+        allow_partial=True,
+    )
+
+    _GENERATED_TIMETABLE_CACHE = gen_result
+    return gen_result
+
+# 5. MASTER TIMETABLE / SCHEDULE (All Faculty Combined)
+@app.route('/schedule')
+def master_schedule():
+    gen_result = get_or_generate_timetable()
+    time_slots = [
+        "09:00 AM - 10:00 AM",
+        "10:00 AM - 11:00 AM",
+        "11:15 AM - 12:15 PM",
+        "01:15 PM - 02:15 PM",
+        "02:15 PM - 03:15 PM"
+    ]
+
+    return render_template(
+        'schedule.html',
+        master_grid=gen_result.get('master_grid', []),
+        time_slots=time_slots,
+        timetable_status=gen_result.get('status'),
+        unscheduled_requirements=gen_result.get('unscheduled_requirements', []),
+        unscheduled_count=gen_result.get('unscheduled_count', 0),
+        validation=gen_result.get('validation', {}),
+        seed=gen_result.get('seed'),
+        total_assigned_count=gen_result.get('total_assigned_count', 0),
+    )
+
+@app.route('/schedule/regenerate')
+def regenerate_schedule():
+    get_or_generate_timetable(force_refresh=True)
+    flash('Timetable regenerated using ML constraint-based solver.')
+    return redirect(url_for('master_schedule'))
 
 @app.route('/logout')
 def logout():

@@ -148,9 +148,18 @@ def normalize_faculty_pool(faculty_list: list[Any]) -> list[dict[str, Any]]:
         resolved, _ = resolve_duplicate_records(group)
 
         # Baseline workload check
-        h_val = resolved.get("current_weekly_hours")
-        if h_val is None:
-            h_val = resolved.get("weekly_hours")
+        raw_workload = None
+        if isinstance(group[0], dict):
+            raw_workload = group[0].get("current_weekly_hours")
+            if raw_workload is None:
+                raw_workload = group[0].get("workload")
+
+        if raw_workload is not None:
+            h_val = raw_workload
+        else:
+            h_val = resolved.get("current_weekly_hours")
+            if h_val is None:
+                h_val = resolved.get("weekly_hours")
         try:
             baseline_h = float(h_val) if h_val is not None else 0.0
             if not math.isfinite(baseline_h) or baseline_h < 0:
@@ -158,13 +167,28 @@ def normalize_faculty_pool(faculty_list: list[Any]) -> list[dict[str, Any]]:
         except (ValueError, TypeError):
             baseline_h = float("inf")
 
-        cap_val = resolved.get("weekly_hour_cap")
+        raw_cap = (
+            resolved.get("weekly_hour_cap")
+            if resolved.get("weekly_hour_cap") is not None
+            else (
+                resolved.get("max_workload")
+                if resolved.get("max_workload") is not None
+                else (
+                    raw.get("max_workload")
+                    if isinstance(raw, dict) and raw.get("max_workload") is not None
+                    else raw.get("weekly_hour_cap") if isinstance(raw, dict) else None
+                )
+            )
+        )
         try:
-            cap_h = float(cap_val) if cap_val is not None else DEFAULT_WORKLOAD_CAP
-            if not math.isfinite(cap_h) or cap_h < 0:
-                cap_h = 0.0
+            if raw_cap is not None:
+                cap_h = float(raw_cap)
+                if not math.isfinite(cap_h) or cap_h < 0:
+                    cap_h = None
+            else:
+                cap_h = None
         except (ValueError, TypeError):
-            cap_h = 0.0
+            cap_h = None
 
         resolved["_clean_baseline_hours"] = baseline_h
         resolved["_clean_cap_hours"] = cap_h
@@ -185,16 +209,8 @@ def decompose_requirements_into_units(
         lec_h = req["lecture_hours"]
         lab_h = req["lab_hours"]
 
-        # If total_hours is 0, default to at least 1 unit if subject is specified
-        if lec_h == 0 and lab_h == 0:
-            units.append({
-                "unit_id": f"{subj_name}_{sec}_lec_1",
-                "requirement": req,
-                "is_lab": False,
-                "duration_hours": 1.0,
-                "consecutive_periods": 1,
-                "unit_type": "Lecture",
-            })
+        # If total_hours is 0 or unverified, do not fabricate units
+        if lec_h <= 0 and lab_h <= 0:
             continue
 
         # Lecture units: 1 hour periods
@@ -472,6 +488,12 @@ def generate_timetable(
     for req in sorted_requirements:
         req_units = req_to_units.get(id(req), [])
         if not req_units:
+            unscheduled.append({
+                "unit_id": f"REQ_{req.get('subject_id')}",
+                "subject": req["name"],
+                "section": req["section"],
+                "reason": "Missing or unverified teaching hours; requirement cannot be scheduled",
+            })
             continue
 
         req_total_hours = sum(u["duration_hours"] for u in req_units)
@@ -482,7 +504,9 @@ def generate_timetable(
             fid = fac.get("faculty_id") or fac.get("id")
             if fac.get("on_leave") is True or fac.get("available") is False:
                 continue
-            cap = fac.get("_clean_cap_hours", DEFAULT_WORKLOAD_CAP)
+            cap = fac.get("_clean_cap_hours")
+            if cap is None:
+                continue
             curr = faculty_workloads.get(fid, 0.0)
             if curr + req_total_hours > cap:
                 continue
@@ -651,14 +675,15 @@ def generate_timetable(
     for fid, f in faculty_by_id.items():
         base = f.get("_clean_baseline_hours", 0.0)
         tot = faculty_workloads.get(fid, base)
-        cap = f.get("_clean_cap_hours", DEFAULT_WORKLOAD_CAP)
+        cap = f.get("_clean_cap_hours")
+        rem = max(0.0, round(cap - tot, 2)) if cap is not None else 0.0
         workload_summary[fid] = {
             "faculty_name": f.get("faculty_name") or f.get("name"),
             "baseline_hours": base,
             "assigned_hours": round(tot - base, 2),
             "total_weekly_hours": round(tot, 2),
             "weekly_hour_cap": cap,
-            "remaining_capacity": max(0.0, round(cap - tot, 2)),
+            "remaining_capacity": rem,
         }
 
     return {
@@ -780,9 +805,14 @@ def validate_timetable(
             base_h = f.get("_clean_baseline_hours", 0.0)
             if not math.isfinite(base_h):
                 base_h = 0.0
-            cap_h = f.get("_clean_cap_hours", DEFAULT_WORKLOAD_CAP)
+            cap_h = f.get("_clean_cap_hours")
             tot_h = round(base_h + faculty_assigned_hours.get(fid_str, 0.0), 2)
-            if tot_h > cap_h:
+            if cap_h is None:
+                if faculty_assigned_hours.get(fid_str, 0.0) > 0:
+                    errors.append(
+                        f"Faculty '{f.get('faculty_name') or f.get('name')}' assigned {tot_h}h but weekly workload limit is unconfirmed/missing."
+                    )
+            elif tot_h > cap_h:
                 errors.append(
                     f"Faculty '{f.get('faculty_name') or f.get('name')}' exceeds weekly workload limit "
                     f"({tot_h}h > {cap_h}h cap; baseline={base_h}h, assigned={faculty_assigned_hours.get(fid_str, 0.0)}h)"
@@ -885,10 +915,12 @@ def format_master_grid(
                     subj = asgn["subject"]
                     sec = asgn.get("section")
                     is_lab = asgn.get("is_lab", False)
+                    sec_clean = str(sec).replace("Section", "").strip() if sec else ""
+                    sec_suffix = f" ({sec_clean})" if sec_clean else ""
                     if is_lab:
-                        slot_row[day] = f"{subj} Lab" + (f" (Sec {sec})" if sec else "")
+                        slot_row[day] = f"{subj} Lab{sec_suffix}"
                     else:
-                        slot_row[day] = f"{subj}" + (f" (Sec {sec})" if sec else "")
+                        slot_row[day] = f"{subj}{sec_suffix}"
                 else:
                     slot_row[day] = "Free"
             slots_grid.append(slot_row)
