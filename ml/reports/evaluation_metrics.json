@@ -1,0 +1,11 @@
+{
+  "model": "RandomForestRegressor",
+  "dataset": "synthetic_faculty_subject_suitability.csv",
+  "rows": 6000,
+  "train_rows": 4800,
+  "test_rows": 1200,
+  "mae": 10.8012,
+  "rmse": 13.3775,
+  "r2": 0.5248,
+  "warning": "Synthetic data and synthetic target formula; metrics do not establish real-world performance."
+}
