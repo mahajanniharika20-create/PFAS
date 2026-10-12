@@ -39,10 +39,47 @@
                 <h3 class="fw-bold text-dark mb-1"><i class="bi bi-calendar3 text-primary me-2"></i>Master Department Timetable</h3>
                 <p class="text-muted mb-0">Consolidated weekly class allocation for all active faculty members.</p>
             </div>
-            <button class="btn btn-outline-primary fw-bold" onclick="window.print()">
-                <i class="bi bi-printer-fill me-1"></i> Print Timetable
-            </button>
+            <div class="d-flex gap-2">
+                <a href="{{ url_for('regenerate_schedule') }}" class="btn btn-outline-success fw-bold">
+                    <i class="bi bi-arrow-clockwise me-1"></i> Regenerate Timetable
+                </a>
+                <button class="btn btn-outline-primary fw-bold" onclick="window.print()">
+                    <i class="bi bi-printer-fill me-1"></i> Print Timetable
+                </button>
+            </div>
         </div>
+
+        {% if timetable_status == 'SUCCESS' %}
+        <div class="alert alert-success d-flex align-items-center mb-4 shadow-sm" role="alert">
+            <i class="bi bi-check-circle-fill fs-4 me-3"></i>
+            <div>
+                <strong>Validated Dynamic Timetable:</strong> All courses allocated with zero faculty or section collisions (Seed: <code>{{ seed }}</code>).
+            </div>
+        </div>
+        {% elif timetable_status == 'PARTIAL' %}
+        <div class="alert alert-warning mb-4 shadow-sm" role="alert">
+            <div class="d-flex align-items-center mb-2">
+                <i class="bi bi-exclamation-triangle-fill fs-4 me-3"></i>
+                <h5 class="alert-heading mb-0">Partial Timetable Generated</h5>
+            </div>
+            <p class="mb-1">Some courses could not be scheduled due to institutional constraints or unverified records:</p>
+            <ul class="mb-0 small">
+                {% for item in unscheduled_requirements %}
+                <li><strong>{{ item.subject }}</strong>{% if item.section %} ({{ item.section }}){% endif %}: {{ item.reason }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% elif timetable_status == 'FAILED' %}
+        <div class="alert alert-danger mb-4 shadow-sm" role="alert">
+            <div class="d-flex align-items-center">
+                <i class="bi bi-x-octagon-fill fs-4 me-3"></i>
+                <div>
+                    <h5 class="alert-heading mb-1">Timetable Generation Failed</h5>
+                    <p class="mb-0">Unable to generate a valid timetable. Required institutional constraints could not be satisfied without collisions.</p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
 
         {% for item in master_grid %}
         <div class="card p-4 mb-4 shadow-sm border-0">
