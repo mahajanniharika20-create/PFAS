@@ -12,6 +12,7 @@ import math
 import re
 from typing import Any
 from ml.config import STATUS_ELIGIBLE, STATUS_NEEDS_REVIEW, STATUS_INELIGIBLE
+from ml.features import normalize_text
 
 # Approved canonical qualification aliases
 QUALIFICATION_ALIASES = {
@@ -572,6 +573,45 @@ def evaluate_constraints(
                             f"during '{entry_slot_str}' (assigned to {fac_desc})."
                         )
                         break
+
+                # 3b-3: Consistent subject-faculty allocation per section
+                # The same section must not receive multiple faculty allocations for the same subject.
+                entry_subj = (
+                    entry.get("subject") or entry.get("name") or entry.get("assigned_subject")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "subject", getattr(entry, "name", getattr(entry, "assigned_subject", None)))
+                )
+                req_subj_name = (
+                    subject.get("name") or subject.get("subject") or subject.get("assigned_subject")
+                    if isinstance(subject, dict)
+                    else getattr(subject, "name", getattr(subject, "subject", None))
+                )
+                is_sub = (
+                    entry.get("is_substitution") or entry.get("is_substituted")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "is_substitution", getattr(entry, "is_substituted", False))
+                )
+                if (
+                    not is_sub
+                    and target_section
+                    and entry_sec
+                    and str(target_section).strip().lower() == str(entry_sec).strip().lower()
+                    and req_subj_name
+                    and entry_subj
+                    and normalize_text(req_subj_name) == normalize_text(entry_subj)
+                ):
+                    is_diff_fac = False
+                    if cand_fid is not None and entry_fid is not None:
+                        is_diff_fac = str(cand_fid).strip() != str(entry_fid).strip()
+                    elif cand_name and entry_name:
+                        is_diff_fac = str(cand_name).strip().lower() != str(entry_name).strip().lower()
+                    if is_diff_fac:
+                        status = STATUS_INELIGIBLE
+                        fac_desc = entry_name or (f"Faculty ID {entry_fid}" if entry_fid else "another faculty member")
+                        reasons.append(
+                            f"Constraint violated: Subject '{req_subj_name}' in Section '{target_section}' is already allocated to {fac_desc}. Consistent faculty allocation required."
+                        )
+                        break
         else:
             reasons.append(
                 "Notice: Complete institutional timetable not provided; cross-faculty section collisions could not be independently verified."
@@ -583,6 +623,50 @@ def evaluate_constraints(
         reasons.append(
             "Notice: Proposed subject has no scheduled time slot; timetable conflict checks could not be performed."
         )
+        # Check consistent subject-faculty allocation against existing schedule even without specific time slot
+        if existing_schedule is not None and target_section:
+            cand_fid = candidate.get("faculty_id", candidate.get("id"))
+            cand_name = candidate.get("faculty_name", candidate.get("name"))
+            req_subj_name = (
+                subject.get("name") or subject.get("subject") or subject.get("assigned_subject")
+                if isinstance(subject, dict)
+                else getattr(subject, "name", getattr(subject, "subject", None))
+            )
+            if req_subj_name:
+                for entry in existing_schedule:
+                    is_sub = (
+                        entry.get("is_substitution") or entry.get("is_substituted")
+                        if isinstance(entry, dict)
+                        else getattr(entry, "is_substitution", getattr(entry, "is_substituted", False))
+                    )
+                    if is_sub:
+                        continue
+                    entry_sec = entry.get("section") if isinstance(entry, dict) else getattr(entry, "section", None)
+                    entry_subj = (
+                        entry.get("subject") or entry.get("name") or entry.get("assigned_subject")
+                        if isinstance(entry, dict)
+                        else getattr(entry, "subject", getattr(entry, "name", getattr(entry, "assigned_subject", None)))
+                    )
+                    if (
+                        entry_sec
+                        and str(target_section).strip().lower() == str(entry_sec).strip().lower()
+                        and entry_subj
+                        and normalize_text(req_subj_name) == normalize_text(entry_subj)
+                    ):
+                        entry_fid = entry.get("faculty_id", entry.get("id")) if isinstance(entry, dict) else getattr(entry, "faculty_id", getattr(entry, "id", None))
+                        entry_name = entry.get("faculty_name", entry.get("name")) if isinstance(entry, dict) else getattr(entry, "faculty_name", getattr(entry, "name", None))
+                        is_diff = False
+                        if cand_fid is not None and entry_fid is not None:
+                            is_diff = str(cand_fid).strip() != str(entry_fid).strip()
+                        elif cand_name and entry_name:
+                            is_diff = str(cand_name).strip().lower() != str(entry_name).strip().lower()
+                        if is_diff:
+                            status = STATUS_INELIGIBLE
+                            fac_desc = entry_name or (f"Faculty ID {entry_fid}" if entry_fid else "another faculty member")
+                            reasons.append(
+                                f"Constraint violated: Subject '{req_subj_name}' in Section '{target_section}' is already allocated to {fac_desc}. Consistent faculty allocation required."
+                            )
+                            break
 
     # 4. Qualification Verification (normalized exact alias matching)
     if subject and subject.get("required_qualification"):

@@ -122,6 +122,8 @@ def normalize_teaching_requirement(raw_req: dict[str, Any] | Any) -> dict[str, A
         "consecutive_periods": max(1, consecutive),
         "preferred_time_slot": raw_req.get("preferred_time_slot"),
         "preferred_faculty_id": raw_req.get("preferred_faculty_id"),
+        "room": raw_req.get("room"),
+        "lab_room": raw_req.get("lab_room"),
         "raw_record": raw_req,
     }
 
@@ -223,6 +225,7 @@ def decompose_requirements_into_units(
                 "duration_hours": 1.0,
                 "consecutive_periods": 1,
                 "unit_type": "Lecture",
+                "room": req.get("room"),
             })
 
         # Lab units: can be scheduled as a 2-hour or multi-hour block
@@ -237,6 +240,7 @@ def decompose_requirements_into_units(
                     "duration_hours": float(lab_block_len),
                     "consecutive_periods": lab_block_len,
                     "unit_type": "Lab",
+                    "room": req.get("lab_room") or req.get("room"),
                 })
 
     return units
@@ -250,6 +254,7 @@ def check_assignment_feasibility(
     current_schedule: list[dict[str, Any]],
     current_faculty_hours: dict[Any, float],
     existing_schedule: list[Any] | None = None,
+    substitutions: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str]:
     """Check whether assigning a session unit to a faculty member at a day/slot is feasible.
 
@@ -265,9 +270,19 @@ def check_assignment_feasibility(
     fid = faculty.get("faculty_id") or faculty.get("id")
 
     # 1. Leave & Availability Check
-    if faculty.get("on_leave") is True:
+    has_sub = False
+    if substitutions:
+        fac_name = faculty.get("faculty_name") or faculty.get("name")
+        for s in substitutions:
+            if str(s.get("faculty_id")) == str(fid) or (
+                s.get("faculty_name") and normalize_text(s.get("faculty_name")) == normalize_text(fac_name)
+            ):
+                has_sub = True
+                break
+
+    if faculty.get("on_leave") is True and not has_sub:
         return False, "Faculty is on leave"
-    if faculty.get("available") is False:
+    if faculty.get("available") is False and not has_sub:
         return False, "Faculty is unavailable"
 
     # 2. Domain & Qualification Verification
@@ -314,6 +329,17 @@ def check_assignment_feasibility(
     target_section = req.get("section")
     if target_section:
         prop_slot["section"] = str(target_section).strip()
+    prop_room = unit.get("room") or req.get("lab_room" if unit.get("is_lab") else "room")
+    if prop_room:
+        prop_slot["room"] = str(prop_room).strip()
+
+    # For continuous multi-hour lab sessions, expand end_min to reflect full continuous duration
+    is_multi_hour_lab = bool(unit.get("is_lab") and float(unit.get("duration_hours", 1.0)) >= 2.0)
+    if is_multi_hour_lab and prop_slot.get("start_min") is not None:
+        prop_slot["end_min"] = prop_slot["start_min"] + int(float(unit.get("duration_hours", 2.0)) * 60)
+        # Continuous laboratory session cannot straddle the lunch break (12:15 PM - 01:15 PM, 735 to 795 min)
+        if prop_slot["start_min"] < 735 and prop_slot["end_min"] > 735:
+            return False, "Continuous laboratory session cannot straddle lunch break"
 
     # 5. Collision Check against Current Assignments in This Generated Timetable
     for assigned in current_schedule:
@@ -321,7 +347,19 @@ def check_assignment_feasibility(
         if assigned["day"] != day:
             continue
 
-        assigned_slot_parsed = assigned["_slot_parsed"]
+        assigned_slot_parsed = assigned.get("_slot_parsed")
+        if not assigned_slot_parsed:
+            assigned_slot_parsed = {
+                "time_slot": assigned.get("time_slot"),
+                "start_min": assigned.get("start_min"),
+                "end_min": assigned.get("end_min"),
+                "day": assigned.get("day"),
+                "room": assigned.get("room"),
+            }
+            if assigned_slot_parsed.get("start_min") is None or assigned_slot_parsed.get("end_min") is None:
+                parsed_t = parse_slot_interval(assigned.get("time_slot"))
+                assigned_slot_parsed["start_min"] = parsed_t.get("start_min")
+                assigned_slot_parsed["end_min"] = parsed_t.get("end_min")
 
         # 5a. Faculty collision: Same faculty cannot teach two classes at the same time
         if str(assigned["faculty_id"]) == str(fid):
@@ -335,6 +373,30 @@ def check_assignment_feasibility(
             collides, desc = slots_collide(prop_slot, assigned_slot_parsed)
             if collides:
                 return False, f"Section '{target_section}' collision with '{assigned['subject']}' ({desc})"
+
+        # 5c. Room collision: Same room cannot be used by two different classes at the same time
+        assigned_room = assigned.get("room")
+        if prop_room and assigned_room and normalize_text(prop_room) == normalize_text(assigned_room):
+            collides, desc = slots_collide(prop_slot, assigned_slot_parsed)
+            if collides:
+                return False, f"Room collision: Room '{prop_room}' already booked on {day} by '{assigned['subject']}' ({desc})"
+
+    # 5d. Subject-faculty consistency in current generated schedule (across all days)
+    # A subject assigned to a section should have a consistent faculty member across all scheduled periods
+    for assigned in current_schedule:
+        if assigned.get("is_substituted") or assigned.get("is_substitution"):
+            continue
+        assigned_sec = assigned.get("section")
+        assigned_subj = assigned.get("subject")
+        if (
+            target_section
+            and assigned_sec
+            and str(target_section).strip().lower() == str(assigned_sec).strip().lower()
+            and assigned_subj
+            and normalize_text(assigned_subj) == normalize_text(req.get("name"))
+        ):
+            if str(assigned.get("faculty_id")) != str(fid):
+                return False, f"Section '{target_section}' already has '{req.get('name')}' allocated to '{assigned.get('faculty_name')}'; consistent faculty allocation required"
 
     # 6. Collision Check against External Existing Schedule
     if existing_schedule:
@@ -351,13 +413,11 @@ def check_assignment_feasibility(
                 if str(target_assign_id).strip() == str(entry_assign_id).strip():
                     continue
 
-            entry_day = (
-                entry.get("day")
+            is_sub = (
+                entry.get("is_substitution") or entry.get("is_substituted")
                 if isinstance(entry, dict)
-                else getattr(entry, "day", None)
+                else getattr(entry, "is_substitution", getattr(entry, "is_substituted", False))
             )
-            if entry_day and extract_day(entry_day) != day:
-                continue
 
             entry_fid = (
                 entry.get("faculty_id", entry.get("id"))
@@ -369,6 +429,30 @@ def check_assignment_feasibility(
                 if isinstance(entry, dict)
                 else getattr(entry, "section", None)
             )
+
+            # Consistent subject-faculty allocation against existing schedule (across all days)
+            if (
+                not is_sub
+                and target_section
+                and entry_sec
+                and str(target_section).strip().lower() == str(entry_sec).strip().lower()
+            ):
+                entry_subj = (
+                    entry.get("subject") or entry.get("name")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "subject", getattr(entry, "name", None))
+                )
+                if entry_subj and normalize_text(entry_subj) == normalize_text(req.get("name")):
+                    if entry_fid is not None and str(entry_fid).strip() != str(fid):
+                        return False, f"Section '{target_section}' already has '{req.get('name')}' allocated to faculty ID '{entry_fid}' in existing schedule; consistent faculty allocation required"
+
+            entry_day = (
+                entry.get("day")
+                if isinstance(entry, dict)
+                else getattr(entry, "day", None)
+            )
+            if entry_day and extract_day(entry_day) != day:
+                continue
 
             # Faculty collision
             if entry_fid is not None and str(entry_fid).strip() == str(fid):
@@ -385,6 +469,13 @@ def check_assignment_feasibility(
                 collides, desc = slots_collide(prop_slot, entry)
                 if collides:
                     return False, f"Section '{target_section}' collision with existing entry ({desc})"
+
+            # Room collision with existing schedule
+            entry_room = entry.get("room") if isinstance(entry, dict) else getattr(entry, "room", None)
+            if prop_room and entry_room and normalize_text(prop_room) == normalize_text(entry_room):
+                collides, desc = slots_collide(prop_slot, entry)
+                if collides:
+                    return False, f"Room collision with existing schedule in '{prop_room}' ({desc})"
 
     # 7. Faculty Busy Slots Check
     busy_slots = faculty.get("assigned_slots") or faculty.get("busy_slots") or []
@@ -421,6 +512,7 @@ def generate_timetable(
     seed: int | None = None,
     policy_weights: dict[str, float] | None = None,
     allow_partial: bool = True,
+    substitutions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Generate a feasible, conflict-free weekly timetable using constraint-first scheduling.
 
@@ -502,8 +594,18 @@ def generate_timetable(
         eligible_faculty: list[dict[str, Any]] = []
         for fac in norm_faculty:
             fid = fac.get("faculty_id") or fac.get("id")
-            if fac.get("on_leave") is True or fac.get("available") is False:
-                continue
+            fac_name = fac.get("faculty_name") or fac.get("name")
+            has_sub = False
+            if substitutions:
+                for s in substitutions:
+                    if str(s.get("faculty_id")) == str(fid) or (s.get("faculty_name") and normalize_text(s.get("faculty_name")) == normalize_text(fac_name)):
+                        has_sub = True
+                        break
+            req_s = normalize_text(req["name"])
+            fac_assigned_s = normalize_text(fac.get("assigned_subject"))
+            if (fac.get("on_leave") is True or fac.get("available") is False) and not has_sub:
+                if req_s != fac_assigned_s:
+                    continue
             cap = fac.get("_clean_cap_hours")
             if cap is None:
                 continue
@@ -514,8 +616,6 @@ def generate_timetable(
             # Check domain / subject / qualification compatibility
             req_dom = normalize_domain(req["domain"] or req["department"])
             fac_dom = normalize_domain(fac.get("domain") or fac.get("department"))
-            req_s = normalize_text(req["name"])
-            fac_assigned_s = normalize_text(fac.get("assigned_subject"))
 
             is_compat = False
             if req_dom and fac_dom and req_dom == fac_dom:
@@ -536,6 +636,58 @@ def generate_timetable(
             if is_compat:
                 eligible_faculty.append(fac)
 
+        # Enforce consistent subject-faculty allocation per section
+        req_sec = str(req.get("section") or "").strip().lower()
+        req_subj_norm = normalize_text(req.get("name"))
+
+        already_allocated_fid = None
+        already_allocated_fname = None
+        for a in current_schedule:
+            if not a.get("is_substituted") and not a.get("is_substitution"):
+                if (
+                    str(a.get("section") or "").strip().lower() == req_sec
+                    and normalize_text(a.get("subject")) == req_subj_norm
+                ):
+                    already_allocated_fid = str(a.get("faculty_id"))
+                    already_allocated_fname = a.get("faculty_name")
+                    break
+
+        if not already_allocated_fid and existing_schedule:
+            for entry in existing_schedule:
+                is_sub = (
+                    entry.get("is_substitution") or entry.get("is_substituted")
+                    if isinstance(entry, dict)
+                    else getattr(entry, "is_substitution", getattr(entry, "is_substituted", False))
+                )
+                if is_sub:
+                    continue
+                e_sec = entry.get("section") if isinstance(entry, dict) else getattr(entry, "section", None)
+                e_subj = entry.get("subject") if isinstance(entry, dict) else getattr(entry, "subject", None)
+                if (
+                    e_sec and str(e_sec).strip().lower() == req_sec
+                    and e_subj and normalize_text(e_subj) == req_subj_norm
+                ):
+                    e_fid = entry.get("faculty_id") if isinstance(entry, dict) else getattr(entry, "faculty_id", None)
+                    if e_fid is not None:
+                        already_allocated_fid = str(e_fid)
+                        already_allocated_fname = entry.get("faculty_name") if isinstance(entry, dict) else getattr(entry, "faculty_name", str(e_fid))
+                        break
+
+        if already_allocated_fid is not None:
+            eligible_faculty = [
+                f for f in eligible_faculty
+                if str(f.get("faculty_id") or f.get("id")) == already_allocated_fid
+            ]
+            if not eligible_faculty:
+                for u in req_units:
+                    unscheduled.append({
+                        "unit_id": u["unit_id"],
+                        "subject": req["name"],
+                        "section": req["section"],
+                        "reason": f"Conflict: Subject '{req['name']}' in section '{req['section']}' is already allocated to {already_allocated_fname or already_allocated_fid}. Consistent faculty allocation required, but faculty is unavailable or has insufficient capacity.",
+                    })
+                continue
+
         if not eligible_faculty:
             for u in req_units:
                 unscheduled.append({
@@ -550,6 +702,13 @@ def generate_timetable(
         scored_faculty: list[tuple[float, dict[str, Any]]] = []
         for fac in eligible_faculty:
             score, _, _ = score_candidate(fac, req, weights=policy_weights)
+            fid = fac.get("faculty_id") or fac.get("id")
+            if req.get("preferred_faculty_id") and str(fid) == str(req.get("preferred_faculty_id")):
+                score += 100.0
+            fac_sec = str(fac.get("section") or "").strip().lower()
+            req_sec = str(req.get("section") or "").strip().lower()
+            if fac_sec and req_sec and fac_sec == req_sec:
+                score += 50.0
             jitter = rng.uniform(0.0, 1.0)
             scored_faculty.append((score + jitter, fac))
 
@@ -582,6 +741,7 @@ def generate_timetable(
                             current_schedule=temp_schedule,
                             current_faculty_hours=faculty_workloads,
                             existing_schedule=existing_schedule,
+                            substitutions=substitutions,
                         )
                         if feasible:
                             sec_day_count = sum(1 for a in temp_schedule if a["day"] == day and a.get("section") == req["section"])
@@ -607,11 +767,25 @@ def generate_timetable(
                         "day": best_day,
                         "time_slot": best_slot_str,
                         "start_min": best_slot_parsed["start_min"],
-                        "end_min": best_slot_parsed["end_min"],
+                        "end_min": (
+                            best_slot_parsed["start_min"] + int(float(u["duration_hours"]) * 60)
+                            if u["is_lab"] and float(u.get("duration_hours", 1.0)) >= 2.0 and best_slot_parsed.get("start_min") is not None
+                            else best_slot_parsed["end_min"]
+                        ),
                         "duration_hours": u["duration_hours"],
                         "is_lab": u["is_lab"],
                         "unit_type": u["unit_type"],
-                        "_slot_parsed": best_slot_parsed,
+                        "room": u.get("room") or req.get("lab_room" if u["is_lab"] else "room"),
+                        "_slot_parsed": {
+                            **best_slot_parsed,
+                            "day": best_day,
+                            "end_min": (
+                                best_slot_parsed["start_min"] + int(float(u["duration_hours"]) * 60)
+                                if u["is_lab"] and float(u.get("duration_hours", 1.0)) >= 2.0 and best_slot_parsed.get("start_min") is not None
+                                else best_slot_parsed["end_min"]
+                            ),
+                            "room": u.get("room") or req.get("lab_room" if u["is_lab"] else "room"),
+                        },
                     }
                     temp_placed.append(assignment_entry)
                     temp_schedule.append(assignment_entry)
@@ -640,6 +814,7 @@ def generate_timetable(
         requirements=norm_requirements,
         faculty_pool=norm_faculty,
         existing_schedule=existing_schedule,
+        substitutions=substitutions,
     )
 
     # 5. Format Master Grid per Faculty
@@ -648,6 +823,7 @@ def generate_timetable(
         faculty_list=norm_faculty,
         time_slots=active_slots,
         days=active_days,
+        substitutions=substitutions,
     )
 
     # 6. Format Section Grid per Section
@@ -657,6 +833,7 @@ def generate_timetable(
         sections=sections_list,
         time_slots=active_slots,
         days=active_days,
+        substitutions=substitutions,
     )
 
     status = (
@@ -686,16 +863,67 @@ def generate_timetable(
             "remaining_capacity": rem,
         }
 
+    # Build substitution coverage records
+    sub_coverage = []
+    seen_cov = set()
+    annotated_sched = apply_substitutions_to_assignments(cleaned_assignments, substitutions, faculty_pool=norm_faculty)
+    for a in annotated_sched:
+        if a.get("is_substituted") and a.get("substitute_name"):
+            cov_key = (
+                a.get("original_faculty_name") or a.get("faculty_name"),
+                a.get("substitute_name"),
+                a.get("subject"),
+                a.get("section"),
+                a.get("day"),
+                a.get("time_slot"),
+            )
+            if cov_key not in seen_cov:
+                seen_cov.add(cov_key)
+                sub_coverage.append({
+                    "original_faculty_name": a.get("original_faculty_name") or a.get("faculty_name"),
+                    "substitute_name": a.get("substitute_name"),
+                    "subject": a.get("subject"),
+                    "section": a.get("section"),
+                    "day": a.get("day"),
+                    "time_slot": a.get("time_slot"),
+                    "room": a.get("room"),
+                    "is_lab": bool(a.get("is_lab")),
+                    "department": a.get("department") or "CSE",
+                    "status": "Admin-Appointed",
+                })
+
+    if substitutions:
+        for s in substitutions:
+            sub_fac = s.get("faculty_name")
+            sub_rep = s.get("substitute_name")
+            if not sub_rep:
+                continue
+            matched = any(c["original_faculty_name"] == sub_fac and c["substitute_name"] == sub_rep for c in sub_coverage)
+            if not matched:
+                sub_coverage.append({
+                    "original_faculty_name": sub_fac,
+                    "substitute_name": sub_rep,
+                    "subject": s.get("subject") or "All Assigned Courses",
+                    "section": s.get("section") or "All Sections",
+                    "day": s.get("day") or "All Week",
+                    "time_slot": "Scheduled Classes",
+                    "room": "Designated Room",
+                    "is_lab": False,
+                    "department": "CSE",
+                    "status": "Admin-Appointed",
+                })
+
     return {
         "status": status,
-        "assignments": cleaned_assignments,
-        "total_assigned_count": len(cleaned_assignments),
+        "assignments": annotated_sched,
+        "total_assigned_count": len(annotated_sched),
         "unscheduled_requirements": unscheduled,
         "unscheduled_count": len(unscheduled),
         "faculty_workloads": workload_summary,
         "validation": validation_res,
         "master_grid": master_grid,
         "section_grid": section_grid,
+        "substitution_coverage": sub_coverage,
         "seed": seed,
     }
 
@@ -705,6 +933,7 @@ def validate_timetable(
     requirements: list[dict[str, Any]] | None = None,
     faculty_pool: list[dict[str, Any]] | None = None,
     existing_schedule: list[Any] | None = None,
+    substitutions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Independently validate a complete generated timetable against all hard constraints.
 
@@ -745,11 +974,21 @@ def validate_timetable(
         fid_str = str(asgn.get("faculty_id"))
         if fid_str in faculty_by_id:
             fac_rec = faculty_by_id[fid_str]
-            if fac_rec.get("on_leave") is True:
+            has_sub = asgn.get("is_substituted") or asgn.get("substitute_name")
+            if not has_sub and substitutions:
+                fac_name = asgn.get("faculty_name")
+                for s in substitutions:
+                    if str(s.get("faculty_id")) == fid_str or (
+                        s.get("faculty_name") and normalize_text(s.get("faculty_name")) == normalize_text(fac_name)
+                    ):
+                        has_sub = True
+                        break
+
+            if fac_rec.get("on_leave") is True and not has_sub:
                 errors.append(
                     f"Faculty '{asgn.get('faculty_name')}' (ID {fid_str}) is on leave but assigned to '{asgn.get('subject')}'"
                 )
-            if fac_rec.get("available") is False:
+            if fac_rec.get("available") is False and not has_sub:
                 errors.append(
                     f"Faculty '{asgn.get('faculty_name')}' (ID {fid_str}) is marked unavailable but assigned to '{asgn.get('subject')}'"
                 )
@@ -790,6 +1029,17 @@ def validate_timetable(
                         f"Section collision on {d1}: Section '{sec1}' has overlapping assignments "
                         f"'{a1.get('subject')}' ({a1.get('time_slot')}, {a1.get('faculty_name')}) and "
                         f"'{a2.get('subject')}' ({a2.get('time_slot')}, {a2.get('faculty_name')}) [{desc}]"
+                    )
+
+            # Check for Room Overlap (if room data exists)
+            r1 = a1.get("room")
+            r2 = a2.get("room")
+            if r1 and r2 and normalize_text(r1) == normalize_text(r2):
+                collides, desc = slots_collide(p1, p2)
+                if collides:
+                    errors.append(
+                        f"Room collision on {d1}: Room '{r1}' has overlapping assignments "
+                        f"'{a1.get('subject')}' ({a1.get('section')}) and '{a2.get('subject')}' ({a2.get('section')}) [{desc}]"
                     )
 
     # 3. Cumulative Workload Accounting
@@ -873,6 +1123,50 @@ def validate_timetable(
             "Notice: Complete institutional schedule not provided; external timetable collisions could not be independently verified."
         )
 
+    # 5. Subject-Faculty Allocation Consistency (No multiple faculty for same subject in same section)
+    sec_subj_allocations: dict[tuple[str, str], tuple[str, str]] = {}
+    for asgn in assignments:
+        if asgn.get("is_substituted") or asgn.get("is_substitution"):
+            continue
+        sec = str(asgn.get("section") or "").strip().lower()
+        subj = normalize_text(asgn.get("subject"))
+        fid = str(asgn.get("faculty_id"))
+        fname = asgn.get("faculty_name", fid)
+        if sec and subj:
+            key = (sec, subj)
+            if key in sec_subj_allocations:
+                prev_fid, prev_fname = sec_subj_allocations[key]
+                if prev_fid != fid:
+                    errors.append(
+                        f"Subject-faculty collision: Section '{asgn.get('section')}' has conflicting faculty allocations "
+                        f"for subject '{asgn.get('subject')}': '{prev_fname}' (ID {prev_fid}) and '{fname}' (ID {fid})"
+                    )
+            else:
+                sec_subj_allocations[key] = (fid, fname)
+
+    if existing_schedule:
+        for entry in existing_schedule:
+            is_sub = (
+                entry.get("is_substitution") or entry.get("is_substituted")
+                if isinstance(entry, dict)
+                else getattr(entry, "is_substitution", getattr(entry, "is_substituted", False))
+            )
+            if is_sub:
+                continue
+            e_sec = str(entry.get("section") if isinstance(entry, dict) else getattr(entry, "section", "") or "").strip().lower()
+            e_subj = normalize_text(entry.get("subject") if isinstance(entry, dict) else getattr(entry, "subject", ""))
+            e_fid = str(entry.get("faculty_id", entry.get("id")) if isinstance(entry, dict) else getattr(entry, "faculty_id", getattr(entry, "id", "")))
+            e_fname = entry.get("faculty_name", entry.get("name")) if isinstance(entry, dict) else getattr(entry, "faculty_name", getattr(entry, "name", e_fid))
+            if e_sec and e_subj and e_fid:
+                key = (e_sec, e_subj)
+                if key in sec_subj_allocations:
+                    curr_fid, curr_fname = sec_subj_allocations[key]
+                    if curr_fid != e_fid:
+                        errors.append(
+                            f"Subject-faculty collision with existing schedule: Section '{e_sec}' has subject '{e_subj}' "
+                            f"allocated to '{curr_fname}', but existing schedule allocated it to '{e_fname}'"
+                        )
+
     return {
         "is_valid": len(errors) == 0,
         "error_count": len(errors),
@@ -882,47 +1176,241 @@ def validate_timetable(
     }
 
 
+def apply_substitutions_to_assignments(
+    assignments: list[dict[str, Any]],
+    substitutions: list[dict[str, Any]] | None = None,
+    faculty_pool: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Annotate timetable assignments with active confirmed substitute appointments."""
+    if not substitutions:
+        return assignments
+
+    fac_name_to_id: dict[str, Any] = {}
+    if faculty_pool:
+        for f in faculty_pool:
+            fid = f.get("faculty_id") or f.get("id")
+            fname = f.get("faculty_name") or f.get("name")
+            if fid is not None and fname:
+                fac_name_to_id[normalize_text(fname)] = fid
+
+    annotated = []
+    for a in assignments:
+        a_copy = dict(a)
+        for sub in substitutions:
+            sub_fac_id = sub.get("faculty_id")
+            sub_fac_name = sub.get("faculty_name")
+            sub_name = sub.get("substitute_name")
+            if not sub_name:
+                continue
+
+            matches_fac = False
+            if sub_fac_id is not None and str(a_copy.get("faculty_id")) == str(sub_fac_id):
+                matches_fac = True
+            elif sub_fac_name and normalize_text(a_copy.get("faculty_name")) == normalize_text(sub_fac_name):
+                matches_fac = True
+
+            if not matches_fac:
+                continue
+
+            # Optional filter by subject (resilient to faculty name or generic labels stored in subject)
+            sub_subj = sub.get("subject")
+            if sub_subj:
+                norm_sub_subj = normalize_text(sub_subj)
+                if norm_sub_subj not in {normalize_text(sub_fac_name or ""), "all", "general", "none", "-", ""}:
+                    if norm_sub_subj != normalize_text(a_copy.get("subject")):
+                        continue
+
+            # Optional filter by section
+            if sub.get("section") and str(sub["section"]).strip().lower() not in {"all", "", "none"}:
+                if str(sub["section"]).strip().lower() != str(a_copy.get("section") or "").strip().lower():
+                    continue
+
+            # Optional filter by day
+            if sub.get("day") and str(sub["day"]).strip().lower() not in {"all", "", "none"}:
+                if str(sub["day"]).strip().lower() not in str(a_copy.get("day") or "").strip().lower():
+                    continue
+
+            # Optional filter by time_slot
+            if sub.get("time_slot"):
+                sub_slot = parse_slot_interval(sub["time_slot"])
+                asgn_slot = parse_slot_interval(a_copy.get("time_slot") or "")
+                collides, _ = slots_collide(sub_slot, asgn_slot)
+                if not collides:
+                    continue
+
+            resolved_sub_id = sub.get("substitute_id")
+            if resolved_sub_id is None and sub_name != "Unassigned — Admin Action Required":
+                resolved_sub_id = fac_name_to_id.get(normalize_text(sub_name))
+                if resolved_sub_id is None:
+                    resolved_sub_id = f"sub_{sub_name}"
+
+            a_copy["is_substituted"] = True
+            a_copy["substitute_name"] = sub_name
+            a_copy["substitute_id"] = resolved_sub_id
+            a_copy["original_faculty_name"] = a_copy.get("original_faculty_name") or a_copy.get("faculty_name")
+            a_copy["original_faculty_id"] = a_copy.get("original_faculty_id") or a_copy.get("faculty_id")
+            if sub_name == "Unassigned — Admin Action Required":
+                a_copy["is_unassigned_sub"] = True
+            elif resolved_sub_id is not None:
+                a_copy["faculty_id"] = resolved_sub_id
+                a_copy["faculty_name"] = sub_name
+            break
+
+        annotated.append(a_copy)
+    return annotated
+
+
 def format_master_grid(
     assignments: list[dict[str, Any]],
     faculty_list: list[dict[str, Any]],
     time_slots: list[str] | None = None,
     days: list[str] | None = None,
+    substitutions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Format assignments into the master_grid structure expected by schedule.html."""
     active_days = days or DEFAULT_DAYS
     active_slots = time_slots or DEFAULT_TIME_SLOTS
 
-    # Index assignments by (faculty_id, day, slot_str)
-    asgn_map: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for a in assignments:
-        fid = str(a.get("faculty_id"))
-        day = a.get("day")
-        slot = a.get("time_slot")
-        asgn_map[(fid, day, slot)] = a
+    annotated_assignments = apply_substitutions_to_assignments(assignments, substitutions)
+
+    # Pre-parse slot intervals
+    parsed_slot_intervals = {s: parse_slot_interval(s) for s in active_slots}
 
     master_grid: list[dict[str, Any]] = []
 
     for fac in faculty_list:
         fid = str(fac.get("faculty_id") or fac.get("id"))
-        fac_obj = fac.get("raw_record", fac)
+        fac_name = fac.get("faculty_name") or fac.get("name") or ""
+        norm_fac_name = normalize_text(fac_name)
+        raw_rec = fac.get("raw_record") or fac.get("raw_data") or {}
+        fac_obj = {
+            "id": fid,
+            "faculty_id": fid,
+            "name": fac_name or (getattr(raw_rec, "name", None) if not isinstance(raw_rec, dict) else raw_rec.get("name")) or "Unknown",
+            "faculty_name": fac_name or (getattr(raw_rec, "name", None) if not isinstance(raw_rec, dict) else raw_rec.get("name")) or "Unknown",
+            "department": fac.get("department") or (getattr(raw_rec, "department", None) if not isinstance(raw_rec, dict) else raw_rec.get("department")) or "CSE",
+            "assigned_subject": fac.get("assigned_subject") or (getattr(raw_rec, "assigned_subject", None) if not isinstance(raw_rec, dict) else raw_rec.get("assigned_subject")) or "Unassigned",
+            "section": fac.get("section") or (getattr(raw_rec, "section", None) if not isinstance(raw_rec, dict) else raw_rec.get("section")) or "A",
+            "year": fac.get("year") or (getattr(raw_rec, "year", None) if not isinstance(raw_rec, dict) else raw_rec.get("year")) or "1",
+            "weekly_hours": (
+                fac.get("weekly_hours")
+                or fac.get("weekly_hour_cap")
+                or (getattr(raw_rec, "weekly_hours", None) if not isinstance(raw_rec, dict) else raw_rec.get("weekly_hours"))
+                or 12
+            ),
+            "on_leave": fac.get("on_leave", False),
+            "substitute_name": None,
+        }
 
-        slots_grid: list[dict[str, str]] = []
+        if substitutions:
+            for s in substitutions:
+                if str(s.get("faculty_id")) == fid or (s.get("faculty_name") and normalize_text(s.get("faculty_name")) == norm_fac_name):
+                    fac_obj["substitute_name"] = s.get("substitute_name")
+                    break
+
+        slots_grid: list[dict[str, Any]] = []
         for slot in active_slots:
-            slot_row: dict[str, str] = {"time": slot}
+            slot_row: dict[str, Any] = {"time": slot}
+            slot_inter = parsed_slot_intervals.get(slot, {})
+            s_min = slot_inter.get("start_min")
+            e_min = slot_inter.get("end_min")
+
             for day in active_days:
-                asgn = asgn_map.get((fid, day, slot))
-                if asgn:
-                    subj = asgn["subject"]
-                    sec = asgn.get("section")
-                    is_lab = asgn.get("is_lab", False)
+                # 1. Check for appointed substitute duties (sessions covered for another instructor)
+                sub_duty = None
+                for a in annotated_assignments:
+                    if a.get("day") == day and a.get("is_substituted") and a.get("substitute_name"):
+                        a_sub_id = str(a.get("substitute_id")) if a.get("substitute_id") is not None else ""
+                        a_sub_name = normalize_text(a["substitute_name"])
+                        # Match substitute identity and ensure it's coverage for someone else
+                        if (a_sub_id == fid or a_sub_name == norm_fac_name) and str(a.get("original_faculty_id")) != fid:
+                            if a.get("time_slot") == slot:
+                                sub_duty = a
+                                break
+                            if s_min is not None and e_min is not None:
+                                a_s = a.get("start_min")
+                                a_e = a.get("end_min")
+                                if a_s is None or a_e is None:
+                                    p = parse_slot_interval(a.get("time_slot"))
+                                    a_s = p.get("start_min")
+                                    a_e = p.get("end_min")
+                                    if a.get("is_lab") and float(a.get("duration_hours", 1.0)) >= 2.0 and a_s is not None:
+                                        a_e = a_s + int(float(a["duration_hours"]) * 60)
+                                if a_s is not None and a_e is not None and a_s < e_min and a_e > s_min:
+                                    sub_duty = a
+                                    break
+
+                # 2. Check for faculty member's regular scheduled classes
+                orig_asgn = None
+                for a in annotated_assignments:
+                    if a.get("day") == day:
+                        a_orig_id = str(a.get("original_faculty_id") or a.get("faculty_id"))
+                        a_orig_name = normalize_text(a.get("original_faculty_name") or a.get("faculty_name"))
+                        if a_orig_id == fid or a_orig_name == norm_fac_name:
+                            if a.get("time_slot") == slot:
+                                orig_asgn = a
+                                break
+                            if s_min is not None and e_min is not None:
+                                a_s = a.get("start_min")
+                                a_e = a.get("end_min")
+                                if a_s is None or a_e is None:
+                                    p = parse_slot_interval(a.get("time_slot"))
+                                    a_s = p.get("start_min")
+                                    a_e = p.get("end_min")
+                                    if a.get("is_lab") and float(a.get("duration_hours", 1.0)) >= 2.0 and a_s is not None:
+                                        a_e = a_s + int(float(a["duration_hours"]) * 60)
+                                if a_s is not None and a_e is not None and a_s < e_min and a_e > s_min:
+                                    orig_asgn = a
+                                    break
+
+                if sub_duty:
+                    # Renders in different color bg (highlighted in gold) alongside regular courses
+                    subj = sub_duty["subject"]
+                    sec = sub_duty.get("section")
+                    is_lab = sub_duty.get("is_lab", False)
                     sec_clean = str(sec).replace("Section", "").strip() if sec else ""
                     sec_suffix = f" ({sec_clean})" if sec_clean else ""
-                    if is_lab:
-                        slot_row[day] = f"{subj} Lab{sec_suffix}"
+                    lab_suffix = " Lab" if is_lab else ""
+                    orig_name = sub_duty.get("original_faculty_name", "Regular Faculty")
+                    room = sub_duty.get("room")
+                    room_suffix = f" [{room}]" if room else ""
+
+                    slot_row[day] = f"{subj}{lab_suffix}{sec_suffix} (Sub for {orig_name}){room_suffix}"
+                    slot_row[f"{day}_is_sub"] = True
+                    slot_row[f"{day}_substitute"] = fac_name
+                    slot_row[f"{day}_original"] = orig_name
+                    slot_row[f"{day}_room"] = room
+                elif orig_asgn:
+                    subj = orig_asgn["subject"]
+                    sec = orig_asgn.get("section")
+                    is_lab = orig_asgn.get("is_lab", False)
+                    sec_clean = str(sec).replace("Section", "").strip() if sec else ""
+                    sec_suffix = f" ({sec_clean})" if sec_clean else ""
+                    lab_suffix = " Lab" if is_lab else ""
+                    room = orig_asgn.get("room")
+                    room_suffix = f" [{room}]" if room else ""
+
+                    if orig_asgn.get("is_substituted"):
+                        sub_name = orig_asgn.get("substitute_name", "Substitute")
+                        if sub_name == "Unassigned — Admin Action Required":
+                            slot_row[day] = f"{subj}{lab_suffix}{sec_suffix} (Unassigned — Admin Action Required){room_suffix}"
+                            slot_row[f"{day}_is_sub"] = True
+                            slot_row[f"{day}_is_unassigned"] = True
+                            slot_row[f"{day}_substitute"] = sub_name
+                            slot_row[f"{day}_original"] = orig_asgn.get("original_faculty_name", fac_name)
+                        else:
+                            slot_row[day] = f"{subj}{lab_suffix}{sec_suffix} (Sub: {sub_name}){room_suffix}"
+                            slot_row[f"{day}_is_sub"] = True
+                            slot_row[f"{day}_substitute"] = sub_name
+                            slot_row[f"{day}_original"] = orig_asgn.get("original_faculty_name", fac_name)
                     else:
-                        slot_row[day] = f"{subj}{sec_suffix}"
+                        slot_row[day] = f"{subj}{lab_suffix}{sec_suffix}{room_suffix}"
+                        slot_row[f"{day}_is_sub"] = False
+                    slot_row[f"{day}_room"] = room
                 else:
                     slot_row[day] = "Free"
+                    slot_row[f"{day}_is_sub"] = False
+                    slot_row[f"{day}_room"] = None
             slots_grid.append(slot_row)
 
         master_grid.append({
@@ -938,35 +1426,128 @@ def format_section_grid(
     sections: list[str] | None = None,
     time_slots: list[str] | None = None,
     days: list[str] | None = None,
+    substitutions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Format assignments into a section-centric weekly timetable grid."""
     active_days = days or DEFAULT_DAYS
     active_slots = time_slots or DEFAULT_TIME_SLOTS
 
-    all_sections = sections or sorted(list({a["section"] for a in assignments if a.get("section")}))
+    annotated_assignments = apply_substitutions_to_assignments(assignments, substitutions)
+
+    all_sections = sections or sorted(list({a["section"] for a in annotated_assignments if a.get("section")}))
 
     # Index by (section, day, slot)
     sec_map: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for a in assignments:
+    for a in annotated_assignments:
         sec = a.get("section")
         if sec:
             sec_map[(str(sec), a.get("day"), a.get("time_slot"))] = a
 
+    parsed_slot_intervals = {s: parse_slot_interval(s) for s in active_slots}
+
     section_grid: list[dict[str, Any]] = []
     for sec in all_sections:
-        sec_slots: list[dict[str, str]] = []
+        sec_slots: list[dict[str, Any]] = []
         for slot in active_slots:
-            row: dict[str, str] = {"time": slot}
+            row: dict[str, Any] = {"time": slot}
+            slot_inter = parsed_slot_intervals.get(slot, {})
+            s_min = slot_inter.get("start_min")
+            e_min = slot_inter.get("end_min")
+
             for day in active_days:
                 asgn = sec_map.get((str(sec), day, slot))
+
+                # Check continuous multi-hour interval overlap if no exact slot hit
+                if not asgn and s_min is not None and e_min is not None:
+                    for a in annotated_assignments:
+                        if str(a.get("section") or "").strip().lower() == str(sec).strip().lower() and a.get("day") == day:
+                            a_s = a.get("start_min")
+                            a_e = a.get("end_min")
+                            if a_s is None or a_e is None:
+                                p = parse_slot_interval(a.get("time_slot"))
+                                a_s = p.get("start_min")
+                                a_e = p.get("end_min")
+                                if a.get("is_lab") and float(a.get("duration_hours", 1.0)) >= 2.0 and a_s is not None:
+                                    a_e = a_s + int(float(a["duration_hours"]) * 60)
+                            if a_s is not None and a_e is not None and a_s < e_min and a_e > s_min:
+                                asgn = a
+                                break
+
                 if asgn:
-                    row[day] = f"{asgn['subject']} ({asgn['faculty_name']})"
+                    subj = asgn["subject"]
+                    is_lab = asgn.get("is_lab", False)
+                    lab_suffix = " Lab" if is_lab else ""
+                    room = asgn.get("room")
+                    room_suffix = f" [{room}]" if room else ""
+
+                    if asgn.get("is_substituted"):
+                        sub_name = asgn.get("substitute_name", "Substitute")
+                        orig_name = asgn.get("original_faculty_name", asgn.get("faculty_name"))
+                        row[f"{day}_is_sub"] = True
+                        row[f"{day}_subject"] = subj
+                        row[f"{day}_faculty"] = sub_name
+                        row[f"{day}_substitute"] = sub_name
+                        row[f"{day}_original"] = orig_name
+                        if sub_name == "Unassigned — Admin Action Required":
+                            row[day] = f"{subj}{lab_suffix} (Unassigned){room_suffix}"
+                            row[f"{day}_is_unassigned"] = True
+                        else:
+                            row[day] = f"{subj}{lab_suffix} [Sub]{room_suffix}"
+                    else:
+                        row[day] = f"{subj}{lab_suffix}{room_suffix}"
+                        row[f"{day}_is_sub"] = False
+                        row[f"{day}_subject"] = subj
+                        row[f"{day}_faculty"] = asgn.get("faculty_name")
+                    row[f"{day}_room"] = room
                 else:
                     row[day] = "Free"
+                    row[f"{day}_is_sub"] = False
+                    row[f"{day}_room"] = None
             sec_slots.append(row)
+
+        # Collect distinct faculty details for this section
+        sec_faculty_map: dict[tuple[str, bool], dict[str, Any]] = {}
+        for a in annotated_assignments:
+            if str(a.get("section") or "").strip().lower() == str(sec).strip().lower():
+                s_name = a.get("subject")
+                if not s_name:
+                    continue
+                is_lab = bool(a.get("is_lab"))
+                key = (s_name, is_lab)
+                fac_name = a.get("faculty_name") or ""
+                sub_name = a.get("substitute_name")
+                is_sub = bool(a.get("is_substituted"))
+                room = a.get("room") or ("Lab" if is_lab else "Lecture Hall")
+                dur = float(a.get("duration_hours") or 1.0)
+
+                if key not in sec_faculty_map:
+                    sec_faculty_map[key] = {
+                        "subject": s_name,
+                        "subject_id": a.get("subject_id") or "",
+                        "faculty_id": a.get("faculty_id"),
+                        "faculty_name": fac_name,
+                        "department": a.get("department") or "",
+                        "room": room,
+                        "is_lab": is_lab,
+                        "is_substituted": is_sub,
+                        "substitute_name": sub_name,
+                        "weekly_hours": 0.0,
+                        "is_synthetic": "[Synthetic]" in str(fac_name),
+                    }
+                sec_faculty_map[key]["weekly_hours"] += dur
+                if is_sub:
+                    sec_faculty_map[key]["is_substituted"] = True
+                    sec_faculty_map[key]["substitute_name"] = sub_name
+
+        sec_faculty_list = sorted(sec_faculty_map.values(), key=lambda x: (x["is_lab"], x["subject"]))
+        for f_entry in sec_faculty_list:
+            f_entry["weekly_hours"] = round(f_entry["weekly_hours"], 1)
+
         section_grid.append({
             "section": sec,
             "slots": sec_slots,
+            "faculty": sec_faculty_list,
+            "faculty_details": sec_faculty_list,
         })
 
     return section_grid

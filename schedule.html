@@ -40,7 +40,7 @@
                 <p class="text-muted mb-0">Consolidated weekly class allocation for all active faculty members.</p>
             </div>
             <div class="d-flex gap-2">
-                <a href="{{ url_for('regenerate_schedule') }}" class="btn btn-outline-success fw-bold">
+                <a href="{{ url_for('regenerate_schedule') }}" id="regenerate-btn" class="btn btn-outline-success fw-bold">
                     <i class="bi bi-arrow-clockwise me-1"></i> Regenerate Timetable
                 </a>
                 <button class="btn btn-outline-primary fw-bold" onclick="window.print()">
@@ -49,11 +49,23 @@
             </div>
         </div>
 
+        <!-- Flashed Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="alert alert-{{ category if category != 'message' else 'success' }} alert-dismissible fade show mb-4 shadow-sm" role="alert">
+                    <i class="bi bi-check-circle-fill me-2"></i><strong>{{ message }}</strong>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
         {% if timetable_status == 'SUCCESS' %}
         <div class="alert alert-success d-flex align-items-center mb-4 shadow-sm" role="alert">
             <i class="bi bi-check-circle-fill fs-4 me-3"></i>
             <div>
-                <strong>Validated Dynamic Timetable:</strong> All courses allocated with zero faculty or section collisions (Seed: <code>{{ seed }}</code>).
+                <strong>Validated Dynamic Timetable:</strong> All courses allocated with zero faculty or section collisions.
             </div>
         </div>
         {% elif timetable_status == 'PARTIAL' %}
@@ -81,50 +93,605 @@
         </div>
         {% endif %}
 
-        {% for item in master_grid %}
-        <div class="card p-4 mb-4 shadow-sm border-0">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <div>
-                    <h5 class="fw-bold mb-0 text-primary">{{ item.faculty.name }}</h5>
-                    <small class="text-muted">
-                        Dept: <strong>{{ item.faculty.department }}</strong> | 
-                        Subject: <strong>{{ item.faculty.assigned_subject or 'Unassigned' }}</strong> | 
-                        Sec: <strong>{{ item.faculty.section or 'A' }}</strong> (Yr {{ item.faculty.year or '1' }})
-                    </small>
-                </div>
-                <span class="badge bg-secondary px-3 py-2">Load: {{ item.faculty.weekly_hours }} hrs/week</span>
-            </div>
-
-            <div class="table-responsive">
-                <table class="table table-bordered text-center align-middle mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th style="width: 18%;">Time Slot</th>
-                            <th>Monday</th>
-                            <th>Tuesday</th>
-                            <th>Wednesday</th>
-                            <th>Thursday</th>
-                            <th>Friday</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for slot in item.slots %}
-                        <tr>
-                            <td class="fw-bold bg-light small">{{ slot.time }}</td>
-                            <td class="{% if slot.Mon != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Mon }}</td>
-                            <td class="{% if slot.Tue != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Tue }}</td>
-                            <td class="{% if slot.Wed != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Wed }}</td>
-                            <td class="{% if slot.Thu != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Thu }}</td>
-                            <td class="{% if slot.Fri != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Fri }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <ul class="nav nav-pills gap-2" id="timetableTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active fw-bold px-3 py-2" id="faculty-tab" data-bs-toggle="pill" data-bs-target="#faculty-view" type="button" role="tab">
+                        <i class="bi bi-person-workspace me-1"></i> Faculty Master Timetable
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link fw-bold px-3 py-2" id="student-tab" data-bs-toggle="pill" data-bs-target="#student-view" type="button" role="tab">
+                        <i class="bi bi-mortarboard me-1"></i> Student Section Timetables
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link fw-bold px-3 py-2" id="substitute-tab" data-bs-toggle="pill" data-bs-target="#substitute-view" type="button" role="tab">
+                        <i class="bi bi-person-fill-check me-1"></i> Active Substitutions &amp; Coverage 
+                        <span class="badge bg-warning text-dark ms-1">{% if substitution_coverage %}{{ substitution_coverage|length }}{% else %}{{ active_substitutions|length }}{% endif %}</span>
+                    </button>
+                </li>
+            </ul>
+            <div class="small text-muted d-none d-md-block">
+                <span class="badge bg-warning text-dark me-1 border border-warning">Highlighted</span> Active Admin-Appointed Substitute
             </div>
         </div>
-        {% endfor %}
+
+        <div class="tab-content" id="timetableTabContent">
+            <!-- Faculty Master Timetable View (Existing layout preserved) -->
+            <div class="tab-pane fade show active" id="faculty-view" role="tabpanel">
+                {% for item in master_grid %}
+                <div class="card p-4 mb-4 shadow-sm border-0">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <h5 class="fw-bold mb-1 text-primary">
+                                <i class="bi bi-person-fill me-2"></i>{{ item.faculty.name or item.faculty.faculty_name or 'Faculty Member' }}
+                                {% if item.faculty.on_leave or item.faculty.is_on_leave %}
+                                <span class="badge bg-danger text-white ms-2" style="font-size: 0.75rem;"><i class="bi bi-clock-history me-1"></i>On Leave</span>
+                                {% if item.faculty.substitute_name %}
+                                    {% if item.faculty.substitute_name == 'Unassigned — Admin Action Required' %}
+                                    <span class="badge bg-danger text-white border border-danger ms-1" style="font-size: 0.75rem;"><i class="bi bi-exclamation-triangle-fill me-1"></i>Unassigned — Admin Action Required</span>
+                                    {% else %}
+                                    <span class="badge bg-warning text-dark border border-warning ms-1" style="font-size: 0.75rem;"><i class="bi bi-person-check-fill me-1"></i>Substitute: {{ item.faculty.substitute_name }}</span>
+                                    {% endif %}
+                                {% endif %}
+                                {% endif %}
+                            </h5>
+                            <small class="text-muted">
+                                Dept: <strong>{{ item.faculty.department }}</strong> | 
+                                Subject: <strong>{{ item.faculty.assigned_subject or 'Unassigned' }}</strong> | 
+                                Sec: <strong>{{ item.faculty.section or 'A' }}</strong> (Yr {{ item.faculty.year or '1' }})
+                            </small>
+                        </div>
+                        <span class="badge bg-secondary px-3 py-2">Load: {{ item.faculty.weekly_hours or item.faculty.current_weekly_hours or 12 }} hrs/week</span>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-bordered text-center align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="width: 18%;">Time Slot</th>
+                                    <th>Monday</th>
+                                    <th>Tuesday</th>
+                                    <th>Wednesday</th>
+                                    <th>Thursday</th>
+                                    <th>Friday</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for slot in item.slots %}
+                                <tr>
+                                    <td class="fw-bold bg-light small">{{ slot.time }}</td>
+                                    <td class="{% if slot.Mon_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Mon != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Mon }}</td>
+                                    <td class="{% if slot.Tue_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Tue != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Tue }}</td>
+                                    <td class="{% if slot.Wed_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Wed != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Wed }}</td>
+                                    <td class="{% if slot.Thu_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Thu != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Thu }}</td>
+                                    <td class="{% if slot.Fri_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Fri != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Fri }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- Student Section Timetables View -->
+            <div class="tab-pane fade" id="student-view" role="tabpanel">
+                {% for item in section_grid %}
+                <div class="card p-4 mb-4 shadow-sm border-0">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <h5 class="fw-bold mb-0 text-primary"><i class="bi bi-mortarboard-fill me-2"></i>Section {{ item.section }} Weekly Student Timetable</h5>
+                            <small class="text-muted">
+                                Section: <strong>Section {{ item.section }}</strong> | 
+                                Weekly schedule organized by day and period (Subject &amp; Allocated Faculty)
+                            </small>
+                        </div>
+                        <span class="badge bg-secondary px-3 py-2">Section {{ item.section }}</span>
+                    </div>
+
+                    <div class="table-responsive mb-4">
+                        <table class="table table-bordered text-center align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="width: 18%;">Time Slot</th>
+                                    <th>Monday</th>
+                                    <th>Tuesday</th>
+                                    <th>Wednesday</th>
+                                    <th>Thursday</th>
+                                    <th>Friday</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for slot in item.slots %}
+                                <tr>
+                                    <td class="fw-bold bg-light small">{{ slot.time }}</td>
+                                    <td class="{% if slot.Mon_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Mon != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Mon }}</td>
+                                    <td class="{% if slot.Tue_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Tue != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Tue }}</td>
+                                    <td class="{% if slot.Wed_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Wed != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Wed }}</td>
+                                    <td class="{% if slot.Thu_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Thu != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Thu }}</td>
+                                    <td class="{% if slot.Fri_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Fri != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Fri }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Separate Faculty Details Table for Respective Section -->
+                    <div class="border-top pt-3">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="fw-bold mb-0 text-dark">
+                                <i class="bi bi-people-fill text-primary me-2"></i>Faculty Details (Section {{ item.section }})
+                            </h6>
+                            <span class="badge bg-light text-secondary border small">{{ item.faculty|length }} Course Allocations</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width: 5%;">#</th>
+                                        <th style="width: 22%;">Subject</th>
+                                        <th style="width: 12%;">Course Code</th>
+                                        <th style="width: 20%;">Allocated Faculty</th>
+                                        <th style="width: 21%;">Substitute Faculty (In Place Of)</th>
+                                        <th style="width: 10%;">Department</th>
+                                        <th style="width: 10%;">Room / Lab</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for fac in item.faculty %}
+                                    <tr>
+                                        <td class="text-muted small">{{ loop.index }}</td>
+                                        <td class="fw-bold text-dark">
+                                            {{ fac.subject }}{% if fac.is_lab %} <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle ms-1">Lab</span>{% endif %}
+                                        </td>
+                                        <td><code>{{ fac.subject_id or '—' }}</code></td>
+                                        <td class="fw-semibold text-primary">
+                                            {{ fac.faculty_name }}
+                                            {% if fac.is_substituted %}
+                                            <span class="badge bg-danger-subtle text-danger border border-danger ms-1" style="font-size: 0.7rem;">On Leave</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if fac.is_substituted %}
+                                                {% if fac.substitute_name == 'Unassigned — Admin Action Required' %}
+                                                <span class="badge bg-danger text-white border border-danger px-2 py-1"><i class="bi bi-exclamation-triangle-fill me-1"></i>Unassigned — Admin Action Required</span>
+                                                <div class="small text-danger mt-1"><i class="bi bi-exclamation-circle text-danger me-1"></i>Admin Attention Needed</div>
+                                                {% else %}
+                                                <span class="badge bg-warning text-dark border border-warning px-2 py-1"><i class="bi bi-person-check-fill me-1"></i>{{ fac.substitute_name }}</span>
+                                                <div class="small text-muted mt-1"><i class="bi bi-shield-check text-success me-1"></i>Admin Appointed</div>
+                                                {% endif %}
+                                            {% else %}
+                                            <span class="text-muted small">—</span>
+                                            {% endif %}
+                                        </td>
+                                        <td><span class="badge bg-secondary">{{ fac.department }}</span></td>
+                                        <td>{{ fac.room or '—' }}</td>
+                                    </tr>
+                                    {% else %}
+                                    <tr>
+                                        <td colspan="7" class="text-center text-muted py-2">No faculty allocations recorded for this section.</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="card p-4 text-center text-muted border-0 shadow-sm">
+                    No section timetables generated yet.
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- Active Substitutions & Coverage View (Separate complete timetable for substitutes replacing faculty on leave) -->
+            <div class="tab-pane fade" id="substitute-view" role="tabpanel">
+                <!-- Overview & Coverage Roster Card -->
+                <div class="card p-4 mb-4 shadow-sm border-0">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+                        <div>
+                            <h5 class="fw-bold mb-1 text-primary">
+                                <i class="bi bi-shield-check me-2"></i>Official Substitute Coverage Timetable
+                            </h5>
+                            <p class="text-muted small mb-0">
+                                Complete record of classes where an authorized substitute has been appointed by Administration in place of faculty on leave.
+                            </p>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2">
+                            <span class="badge bg-warning text-dark border border-warning px-3 py-2">
+                                <i class="bi bi-person-check-fill me-1"></i>{{ substitution_coverage|length if substitution_coverage else active_substitutions|length }} Active Coverage Sessions
+                            </span>
+                            <span class="badge bg-light text-dark border px-3 py-2">
+                                <i class="bi bi-mortarboard me-1"></i>{{ covered_sections_timetables|length }} Covered Sections
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-bordered table-hover align-middle mb-0 text-center">
+                            <thead class="table-light">
+                                <tr>
+                                    <th style="width: 5%;">#</th>
+                                    <th style="width: 20%;">Faculty on Leave (Absent)</th>
+                                    <th style="width: 20%;">Appointed Substitute (In Replace Of)</th>
+                                    <th style="width: 17%;">Course / Subject</th>
+                                    <th style="width: 8%;">Section</th>
+                                    <th style="width: 9%;">Day</th>
+                                    <th style="width: 11%;">Time Slot</th>
+                                    <th style="width: 10%;">Room / Hall</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for cov in substitution_coverage %}
+                                <tr>
+                                    <td class="text-muted small">{{ loop.index }}</td>
+                                    <td class="text-danger fw-semibold">
+                                        <i class="bi bi-person-dash me-1"></i>{{ cov.original_faculty_name }}
+                                        <br><span class="badge bg-danger-subtle text-danger border border-danger" style="font-size: 0.68rem;">On Leave</span>
+                                    </td>
+                                    <td class="text-dark fw-bold {% if cov.substitute_name == 'Unassigned — Admin Action Required' %}bg-danger-subtle{% else %}bg-warning-subtle{% endif %}">
+                                        {% if cov.substitute_name == 'Unassigned — Admin Action Required' %}
+                                        <i class="bi bi-exclamation-triangle-fill text-danger me-1"></i><span class="text-danger">{{ cov.substitute_name }}</span>
+                                        <br><span class="badge bg-danger text-white border border-danger" style="font-size: 0.68rem;">Action Required</span>
+                                        {% else %}
+                                        <i class="bi bi-person-check-fill text-warning me-1"></i>{{ cov.substitute_name }}
+                                        <br><span class="badge bg-warning text-dark border border-warning" style="font-size: 0.68rem;">Appointed Substitute</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="fw-semibold text-primary">
+                                        {{ cov.subject }}
+                                        {% if cov.is_lab %}
+                                        <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle ms-1">Lab</span>
+                                        {% endif %}
+                                    </td>
+                                    <td><span class="badge bg-secondary">Sec {{ cov.section }}</span></td>
+                                    <td class="fw-semibold">{{ cov.day }}</td>
+                                    <td class="small">{{ cov.time_slot }}</td>
+                                    <td>{{ cov.room or 'Allocated Room' }}</td>
+                                </tr>
+                                {% else %}
+                                {% for sub in active_substitutions %}
+                                <tr>
+                                    <td class="text-muted small">{{ loop.index }}</td>
+                                    <td class="text-danger fw-semibold">
+                                        <i class="bi bi-person-dash me-1"></i>{{ sub.faculty_name }}
+                                        <br><span class="badge bg-danger-subtle text-danger border border-danger" style="font-size: 0.68rem;">On Leave</span>
+                                    </td>
+                                    <td class="text-dark fw-bold {% if sub.substitute_name == 'Unassigned — Admin Action Required' %}bg-danger-subtle{% else %}bg-warning-subtle{% endif %}">
+                                        {% if sub.substitute_name == 'Unassigned — Admin Action Required' %}
+                                        <i class="bi bi-exclamation-triangle-fill text-danger me-1"></i><span class="text-danger">{{ sub.substitute_name }}</span>
+                                        <br><span class="badge bg-danger text-white border border-danger" style="font-size: 0.68rem;">Action Required</span>
+                                        {% else %}
+                                        <i class="bi bi-person-check-fill text-warning me-1"></i>{{ sub.substitute_name }}
+                                        <br><span class="badge bg-warning text-dark border border-warning" style="font-size: 0.68rem;">Appointed Substitute</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="fw-semibold text-primary">{{ sub.subject or 'All Courses' }}</td>
+                                    <td><span class="badge bg-secondary">{% if sub.section %}Sec {{ sub.section }}{% else %}All Sec{% endif %}</span></td>
+                                    <td class="fw-semibold">{{ sub.day or 'All Week' }}</td>
+                                    <td class="small">Scheduled Slots</td>
+                                    <td>Assigned Rooms</td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <td colspan="8" class="text-muted text-center py-4">
+                                        <i class="bi bi-calendar-check fs-3 d-block text-muted mb-2"></i>
+                                        No active substitute faculty appointments currently in place.
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Complete Weekly Actual Timetables: Appointed Substitute Faculty -->
+                {% if substitute_faculty_timetables %}
+                <div class="mb-4">
+                    <div class="d-flex align-items-center mb-3">
+                        <div class="bg-warning text-dark rounded-circle p-2 me-2 d-inline-flex align-items-center justify-content-center" style="width: 36px; height: 36px;">
+                            <i class="bi bi-person-check-fill fs-5"></i>
+                        </div>
+                        <div>
+                            <h5 class="fw-bold mb-0 text-dark">Complete Weekly Timetable: Appointed Substitute Faculty</h5>
+                            <small class="text-muted">Actual weekly schedule of substitute faculty showing their assigned section coverage (highlighted in gold) alongside regular courses.</small>
+                        </div>
+                    </div>
+
+                    {% for item in substitute_faculty_timetables %}
+                    <div class="card p-4 mb-4 shadow-sm border border-warning-subtle">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                            <div>
+                                <h5 class="fw-bold mb-1 text-primary">
+                                    <i class="bi bi-person-badge-fill me-2 text-warning"></i>{{ item.faculty.name or item.faculty.faculty_name }}
+                                    <span class="badge bg-warning text-dark border border-warning ms-2" style="font-size: 0.75rem;">
+                                        <i class="bi bi-shield-check me-1"></i>Appointed Substitute
+                                    </span>
+                                </h5>
+                                <small class="text-muted">
+                                    Dept: <strong>{{ item.faculty.department }}</strong> | 
+                                    Regular Subject: <strong>{{ item.faculty.assigned_subject or 'Unassigned' }}</strong> | 
+                                    Base Sec: <strong>{{ item.faculty.section or '—' }}</strong>
+                                </small>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <span class="badge bg-secondary px-3 py-2">Load: {{ item.faculty.weekly_hours or item.faculty.current_weekly_hours or 14 }} hrs/week</span>
+                                <span class="badge bg-warning-subtle text-dark border border-warning px-3 py-2">Includes Substitute Duties</span>
+                            </div>
+                        </div>
+
+                        <div class="table-responsive">
+                            <table class="table table-bordered text-center align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width: 18%;">Time Slot</th>
+                                        <th>Monday</th>
+                                        <th>Tuesday</th>
+                                        <th>Wednesday</th>
+                                        <th>Thursday</th>
+                                        <th>Friday</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for slot in item.slots %}
+                                    <tr>
+                                        <td class="fw-bold bg-light small">{{ slot.time }}</td>
+                                        <td class="{% if slot.Mon_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Mon != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Mon }}</td>
+                                        <td class="{% if slot.Tue_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Tue != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Tue }}</td>
+                                        <td class="{% if slot.Wed_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Wed != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Wed }}</td>
+                                        <td class="{% if slot.Thu_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Thu != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Thu }}</td>
+                                        <td class="{% if slot.Fri_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Fri != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Fri }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                <!-- Complete Weekly Actual Timetables: Faculty on Leave (Absent) -->
+                {% if on_leave_faculty_timetables %}
+                <div class="mb-4">
+                    <div class="d-flex align-items-center mb-3">
+                        <div class="bg-danger text-white rounded-circle p-2 me-2 d-inline-flex align-items-center justify-content-center" style="width: 36px; height: 36px;">
+                            <i class="bi bi-person-dash-fill fs-5"></i>
+                        </div>
+                        <div>
+                            <h5 class="fw-bold mb-0 text-dark">Complete Weekly Timetable: Faculty on Leave (Fulfillment &amp; Coverage)</h5>
+                            <small class="text-muted">Timetable of regular faculty on leave, showing which sessions are covered by appointed substitutes.</small>
+                        </div>
+                    </div>
+
+                    {% for item in on_leave_faculty_timetables %}
+                    <div class="card p-4 mb-4 shadow-sm border border-danger-subtle">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                            <div>
+                                <h5 class="fw-bold mb-1 text-danger">
+                                    <i class="bi bi-person-dash me-2"></i>{{ item.faculty.name or item.faculty.faculty_name }}
+                                    <span class="badge bg-danger text-white ms-2" style="font-size: 0.75rem;">
+                                        <i class="bi bi-clock-history me-1"></i>On Approved Leave
+                                    </span>
+                                    {% if item.faculty.substitute_name %}
+                                        {% if item.faculty.substitute_name == 'Unassigned — Admin Action Required' %}
+                                        <span class="badge bg-danger text-white border border-danger ms-1" style="font-size: 0.75rem;">
+                                            <i class="bi bi-exclamation-triangle-fill me-1"></i>Unassigned — Admin Action Required
+                                        </span>
+                                        {% else %}
+                                        <span class="badge bg-warning text-dark border border-warning ms-1" style="font-size: 0.75rem;">
+                                            <i class="bi bi-person-check-fill me-1"></i>Substituted by: {{ item.faculty.substitute_name }}
+                                        </span>
+                                        {% endif %}
+                                    {% endif %}
+                                </h5>
+                                <small class="text-muted">
+                                    Dept: <strong>{{ item.faculty.department }}</strong> | 
+                                    Subject: <strong>{{ item.faculty.assigned_subject or 'Unassigned' }}</strong> | 
+                                    Assigned Section: <strong>Section {{ item.faculty.section or 'A' }}</strong>
+                                </small>
+                            </div>
+                            <span class="badge bg-secondary px-3 py-2">Catalog Hours: {{ item.faculty.weekly_hours or 12 }} hrs/week</span>
+                        </div>
+
+                        <div class="table-responsive">
+                            <table class="table table-bordered text-center align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width: 18%;">Time Slot</th>
+                                        <th>Monday</th>
+                                        <th>Tuesday</th>
+                                        <th>Wednesday</th>
+                                        <th>Thursday</th>
+                                        <th>Friday</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for slot in item.slots %}
+                                    <tr>
+                                        <td class="fw-bold bg-light small">{{ slot.time }}</td>
+                                        <td class="{% if slot.Mon_is_sub %}bg-danger-subtle text-danger fw-bold border border-danger shadow-sm{% elif slot.Mon != 'Free' %}bg-secondary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Mon }}</td>
+                                        <td class="{% if slot.Tue_is_sub %}bg-danger-subtle text-danger fw-bold border border-danger shadow-sm{% elif slot.Tue != 'Free' %}bg-secondary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Tue }}</td>
+                                        <td class="{% if slot.Wed_is_sub %}bg-danger-subtle text-danger fw-bold border border-danger shadow-sm{% elif slot.Wed != 'Free' %}bg-secondary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Wed }}</td>
+                                        <td class="{% if slot.Thu_is_sub %}bg-danger-subtle text-danger fw-bold border border-danger shadow-sm{% elif slot.Thu != 'Free' %}bg-secondary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Thu }}</td>
+                                        <td class="{% if slot.Fri_is_sub %}bg-danger-subtle text-danger fw-bold border border-danger shadow-sm{% elif slot.Fri != 'Free' %}bg-secondary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Fri }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                <!-- Complete Weekly Section Timetables with Substitute In Place of Faculty on Leave -->
+                {% if covered_sections_timetables %}
+                <div class="mb-4">
+                    <div class="d-flex align-items-center mb-3">
+                        <div class="bg-primary text-white rounded-circle p-2 me-2 d-inline-flex align-items-center justify-content-center" style="width: 36px; height: 36px;">
+                            <i class="bi bi-mortarboard-fill fs-5"></i>
+                        </div>
+                        <div>
+                            <h5 class="fw-bold mb-0 text-dark">Covered Section Timetables (Substitute In Place Of Faculty On Leave)</h5>
+                            <small class="text-muted">Section weekly timetable and complete faculty allocations with substitutes actively serving in place of regular instructors.</small>
+                        </div>
+                    </div>
+
+                    {% for item in covered_sections_timetables %}
+                    <div class="card p-4 mb-4 shadow-sm border-0">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <div>
+                                <h5 class="fw-bold mb-0 text-primary">
+                                    <i class="bi bi-mortarboard-fill me-2"></i>Section {{ item.section }} Weekly Timetable (Coverage Active)
+                                </h5>
+                                <small class="text-muted">
+                                    Section: <strong>Section {{ item.section }}</strong> | 
+                                    Slots marked in gold feature an appointed substitute in place of faculty on leave.
+                                </small>
+                            </div>
+                            <span class="badge bg-warning text-dark border border-warning px-3 py-2">
+                                <i class="bi bi-person-check-fill me-1"></i>Substitute Covered
+                            </span>
+                        </div>
+
+                        <div class="table-responsive mb-4">
+                            <table class="table table-bordered text-center align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width: 18%;">Time Slot</th>
+                                        <th>Monday</th>
+                                        <th>Tuesday</th>
+                                        <th>Wednesday</th>
+                                        <th>Thursday</th>
+                                        <th>Friday</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for slot in item.slots %}
+                                    <tr>
+                                        <td class="fw-bold bg-light small">{{ slot.time }}</td>
+                                        <td class="{% if slot.Mon_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Mon != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Mon }}</td>
+                                        <td class="{% if slot.Tue_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Tue != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Tue }}</td>
+                                        <td class="{% if slot.Wed_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Wed != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Wed }}</td>
+                                        <td class="{% if slot.Thu_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Thu != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Thu }}</td>
+                                        <td class="{% if slot.Fri_is_sub %}bg-warning text-dark fw-bold border border-warning shadow-sm{% elif slot.Fri != 'Free' %}bg-primary text-white fw-semibold{% else %}text-muted small{% endif %}">{{ slot.Fri }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- Faculty Details Table for Respective Section -->
+                        <div class="border-top pt-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="fw-bold mb-0 text-dark">
+                                    <i class="bi bi-people-fill text-primary me-2"></i>Faculty Allocation Details (Section {{ item.section }})
+                                </h6>
+                                <span class="badge bg-light text-secondary border small">{{ item.faculty|length }} Course Allocations</span>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-bordered table-hover align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th style="width: 5%;">#</th>
+                                            <th style="width: 22%;">Subject</th>
+                                            <th style="width: 12%;">Course Code</th>
+                                            <th style="width: 20%;">Allocated Faculty</th>
+                                            <th style="width: 21%;">Substitute Faculty (In Place Of)</th>
+                                            <th style="width: 10%;">Department</th>
+                                            <th style="width: 10%;">Room / Lab</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for fac in item.faculty %}
+                                        <tr>
+                                            <td class="text-muted small">{{ loop.index }}</td>
+                                            <td class="fw-bold text-dark">
+                                                {{ fac.subject }}{% if fac.is_lab %} <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle ms-1">Lab</span>{% endif %}
+                                            </td>
+                                            <td><code>{{ fac.subject_id or '—' }}</code></td>
+                                            <td class="fw-semibold text-primary">
+                                                {{ fac.faculty_name }}
+                                                {% if fac.is_substituted %}
+                                                <span class="badge bg-danger-subtle text-danger border border-danger ms-1" style="font-size: 0.7rem;">On Leave</span>
+                                                {% endif %}
+                                            </td>
+                                            <td>
+                                                {% if fac.is_substituted %}
+                                                    {% if fac.substitute_name == 'Unassigned — Admin Action Required' %}
+                                                    <span class="badge bg-danger text-white border border-danger px-2 py-1"><i class="bi bi-exclamation-triangle-fill me-1"></i>Unassigned — Admin Action Required</span>
+                                                    <div class="small text-danger mt-1"><i class="bi bi-exclamation-circle text-danger me-1"></i>Admin Attention Needed</div>
+                                                    {% else %}
+                                                    <span class="badge bg-warning text-dark border border-warning px-2 py-1"><i class="bi bi-person-check-fill me-1"></i>{{ fac.substitute_name }}</span>
+                                                    <div class="small text-muted mt-1"><i class="bi bi-shield-check text-success me-1"></i>Admin Appointed</div>
+                                                    {% endif %}
+                                                {% else %}
+                                                <span class="text-muted small">—</span>
+                                                {% endif %}
+                                            </td>
+                                            <td><span class="badge bg-secondary">{{ fac.department }}</span></td>
+                                            <td>{{ fac.room or '—' }}</td>
+                                        </tr>
+                                        {% else %}
+                                        <tr>
+                                            <td colspan="7" class="text-center text-muted py-2">No faculty allocations recorded for this section.</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            // Restore active tab from URL hash (e.g., #substitute-view)
+            var currentHash = window.location.hash;
+            if (currentHash) {
+                var triggerEl = document.querySelector('button[data-bs-target="' + currentHash + '"]');
+                if (triggerEl) {
+                    var tab = bootstrap.Tab.getOrCreateInstance(triggerEl);
+                    tab.show();
+                }
+            }
+
+            // Sync hash and regenerate link when switching tabs
+            var tabButtons = document.querySelectorAll('button[data-bs-toggle="pill"]');
+            tabButtons.forEach(function(btn) {
+                btn.addEventListener('shown.bs.tab', function(e) {
+                    var targetId = e.target.getAttribute('data-bs-target');
+                    if (targetId) {
+                        history.replaceState(null, null, targetId);
+                        var regenBtn = document.getElementById('regenerate-btn');
+                        if (regenBtn) {
+                            var cleanTarget = targetId.replace('#', '');
+                            regenBtn.href = "{{ url_for('regenerate_schedule') }}?tab=" + cleanTarget;
+                        }
+                    }
+                });
+            });
+
+            // Initialize regenerate button href based on initial tab
+            var activePill = document.querySelector('button[data-bs-toggle="pill"].active');
+            if (activePill) {
+                var target = activePill.getAttribute('data-bs-target');
+                var regenBtn = document.getElementById('regenerate-btn');
+                if (target && regenBtn) {
+                    regenBtn.href = "{{ url_for('regenerate_schedule') }}?tab=" + target.replace('#', '');
+                }
+            }
+        });
+    </script>
 </body>
 </html>

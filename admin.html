@@ -37,6 +37,16 @@
     </nav>
 
     <div class="container pb-5">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for m in messages %}
+                <div class="alert alert-info alert-dismissible fade show py-2 small shadow-sm mb-3" role="alert">
+                    <i class="bi bi-info-circle-fill me-2"></i>{{ m }}
+                    <button type="button" class="btn-close py-2" data-bs-dismiss="alert"></button>
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
         
         <!-- Filters & Add Faculty Button -->
         <div class="card p-4 mb-4 shadow-sm border-0">
@@ -111,7 +121,12 @@
                         {% for f in faculty %}
                         <tr>
                             <td>{{ loop.index }}</td>
-                            <td class="fw-bold">{{ f.name }}</td>
+                            <td class="fw-bold">
+                                {{ f.name }}
+                                {% if 'synth' in f.email or '[Synthetic]' in f.name %}
+                                <span class="badge bg-light text-secondary border ms-1" style="font-size: 0.7rem;">Synthetic</span>
+                                {% endif %}
+                            </td>
                             <td class="text-muted small">{{ f.email }}</td>
                             <td><span class="badge bg-secondary">{{ f.department }}</span></td>
                             <td>{{ f.domain }}</td>
@@ -138,14 +153,66 @@
                                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                                         </div>
                                         <div class="modal-body row g-3">
-                                            <div class="col-6"><label class="form-label">Name</label><input type="text" name="name" class="form-control" value="{{ f.name }}" required></div>
-                                            <div class="col-6"><label class="form-label">Email</label><input type="email" name="email" class="form-control" value="{{ f.email }}" required></div>
-                                            <div class="col-6"><label class="form-label">Department</label><input type="text" name="department" class="form-control" value="{{ f.department }}" required></div>
-                                            <div class="col-6"><label class="form-label">Domain</label><input type="text" name="domain" class="form-control" value="{{ f.domain }}"></div>
-                                            <div class="col-6"><label class="form-label">Subject</label><input type="text" name="assigned_subject" class="form-control" value="{{ f.assigned_subject }}"></div>
-                                            <div class="col-3"><label class="form-label">Year</label><input type="text" name="year" class="form-control" value="{{ f.year }}"></div>
-                                            <div class="col-3"><label class="form-label">Section</label><input type="text" name="section" class="form-control" value="{{ f.section }}"></div>
-                                            <div class="col-12"><label class="form-label">Weekly Hours</label><input type="number" name="weekly_hours" class="form-control" value="{{ f.weekly_hours }}"></div>
+                                            <div class="col-6"><label class="form-label fw-semibold">Name</label><input type="text" name="name" class="form-control" value="{{ f.name }}" required></div>
+                                            <div class="col-6"><label class="form-label fw-semibold">Email</label><input type="email" name="email" class="form-control" value="{{ f.email }}" required></div>
+                                            <div class="col-6">
+                                                <label class="form-label fw-semibold">Department</label>
+                                                <select name="department" class="form-select" required>
+                                                    <option value="CSE" {% if f.department == 'CSE' %}selected{% endif %}>CSE</option>
+                                                    <option value="AI_DS" {% if f.department == 'AI_DS' %}selected{% endif %}>AI_DS</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-6">
+                                                <label class="form-label fw-semibold">Assigned Subject</label>
+                                                <select name="assigned_subject" class="form-select" required>
+                                                    <option value="Data Structures" {% if f.assigned_subject == 'Data Structures' %}selected{% endif %}>Data Structures (CS201)</option>
+                                                    <option value="Database Systems" {% if f.assigned_subject == 'Database Systems' %}selected{% endif %}>Database Systems (CS202)</option>
+                                                    <option value="Operating Systems" {% if f.assigned_subject == 'Operating Systems' %}selected{% endif %}>Operating Systems (CS203)</option>
+                                                    <option value="Web Development" {% if f.assigned_subject == 'Web Development' %}selected{% endif %}>Web Development (CS204)</option>
+                                                    <option value="Machine Learning" {% if f.assigned_subject == 'Machine Learning' %}selected{% endif %}>Machine Learning (CS301)</option>
+                                                    <option value="Deep Learning" {% if f.assigned_subject == 'Deep Learning' %}selected{% endif %}>Deep Learning (CS302)</option>
+                                                    <option value="Computer Networks" {% if f.assigned_subject == 'Computer Networks' %}selected{% endif %}>Computer Networks (CS303)</option>
+                                                    <option value="Data Science" {% if f.assigned_subject == 'Data Science' %}selected{% endif %}>Data Science (CS304)</option>
+                                                    <option value="Cybersecurity" {% if f.assigned_subject == 'Cybersecurity' %}selected{% endif %}>Cybersecurity (CS305)</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-6">
+                                                <label class="form-label fw-semibold">Domain</label>
+                                                <select name="domain" class="form-select" required>
+                                                    <option value="Algorithms" {% if f.domain == 'Algorithms' %}selected{% endif %}>Algorithms</option>
+                                                    <option value="Database" {% if f.domain == 'Database' %}selected{% endif %}>Database</option>
+                                                    <option value="Networks" {% if f.domain == 'Networks' %}selected{% endif %}>Networks</option>
+                                                    <option value="AI/ML" {% if f.domain == 'AI/ML' %}selected{% endif %}>AI/ML</option>
+                                                    <option value="Web Development" {% if f.domain == 'Web Development' %}selected{% endif %}>Web Development</option>
+                                                    <option value="Data Science" {% if f.domain == 'Data Science' %}selected{% endif %}>Data Science</option>
+                                                    <option value="Security" {% if f.domain == 'Security' %}selected{% endif %}>Security</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-3">
+                                                <label class="form-label fw-semibold">Year</label>
+                                                <select name="year" class="form-select" required>
+                                                    <option value="1" {% if f.year == '1' %}selected{% endif %}>Year 1</option>
+                                                    <option value="2" {% if f.year == '2' %}selected{% endif %}>Year 2</option>
+                                                    <option value="3" {% if f.year == '3' %}selected{% endif %}>Year 3</option>
+                                                    <option value="4" {% if f.year == '4' %}selected{% endif %}>Year 4</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-3">
+                                                <label class="form-label fw-semibold">Section</label>
+                                                <select name="section" class="form-select" required>
+                                                    <option value="A" {% if f.section == 'A' %}selected{% endif %}>Sec A</option>
+                                                    <option value="B" {% if f.section == 'B' %}selected{% endif %}>Sec B</option>
+                                                    <option value="C" {% if f.section == 'C' %}selected{% endif %}>Sec C</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-12">
+                                                <label class="form-label fw-semibold">Weekly Hours</label>
+                                                <select name="weekly_hours" class="form-select" required>
+                                                    {% for h in [10, 11, 12, 13, 14, 15, 16] %}
+                                                    <option value="{{ h }}" {% if f.weekly_hours == h %}selected{% endif %}>{{ h }} hrs/week</option>
+                                                    {% endfor %}
+                                                </select>
+                                            </div>
                                         </div>
                                         <div class="modal-footer">
                                             <button type="submit" class="btn btn-primary fw-bold">Save Changes</button>
@@ -164,14 +231,20 @@
         <div class="row g-4">
             <div class="col-md-7">
                 <div class="card p-4 shadow-sm border-0 h-100">
-                    <h5 class="fw-bold mb-3"><i class="bi bi-envelope-exclamation-fill text-warning me-2"></i>Leave & Substitute Requests</h5>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="fw-bold mb-0"><i class="bi bi-envelope-exclamation-fill text-warning me-2"></i>Leave &amp; Substitute Requests</h5>
+                        <button class="btn btn-sm btn-primary fw-bold" data-bs-toggle="modal" data-bs-target="#appointSubModal">
+                            <i class="bi bi-person-plus-fill me-1"></i> Appoint Substitute
+                        </button>
+                    </div>
                     <div class="table-responsive">
                         <table class="table table-sm align-middle">
                             <thead>
                                 <tr>
                                     <th>Faculty</th>
                                     <th>Date</th>
-                                    <th>Substitute</th>
+                                    <th>Reason</th>
+                                    <th>Appointed Substitute</th>
                                     <th>Status</th>
                                     <th>Action</th>
                                 </tr>
@@ -181,25 +254,135 @@
                                 <tr>
                                     <td class="fw-bold">{{ l.faculty_name }}</td>
                                     <td>{{ l.leave_date }}</td>
-                                    <td><span class="badge bg-info text-dark">{{ l.substitute_name }}</span></td>
+                                    <td class="text-muted small">{{ l.reason }}</td>
                                     <td>
-                                        <span class="badge {% if l.status == 'Approved' %}bg-success{% elif l.status == 'Rejected' %}bg-danger{% else %}bg-warning text-dark{% endif %}">
+                                        {% if l.substitute_name == 'Unassigned — Admin Action Required' %}
+                                        <span class="badge bg-danger text-white border border-danger"><i class="bi bi-exclamation-triangle-fill me-1"></i>Unassigned — Admin Action Required</span>
+                                        {% elif l.substitute_name %}
+                                        <span class="badge bg-warning text-dark border border-warning"><i class="bi bi-person-check-fill me-1"></i>{{ l.substitute_name }}</span>
+                                        {% else %}
+                                        <span class="badge bg-light text-muted border">None Assigned</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <span class="badge {% if l.status == 'Approved' %}bg-success{% elif l.status == 'Rejected' %}bg-danger{% elif l.status == 'Cancelled' %}bg-secondary{% else %}bg-warning text-dark{% endif %}">
                                             {{ l.status }}
                                         </span>
                                     </td>
                                     <td>
                                         {% if l.status == 'Pending' %}
-                                        <a href="{{ url_for('handle_leave', id=l.id, action='approve') }}" class="btn btn-sm btn-success p-1"><i class="bi bi-check-lg"></i></a>
-                                        <a href="{{ url_for('handle_leave', id=l.id, action='reject') }}" class="btn btn-sm btn-danger p-1"><i class="bi bi-x-lg"></i></a>
+                                        <button class="btn btn-sm btn-outline-primary py-0 px-2 me-1" title="Appoint Substitute & Approve" data-bs-toggle="modal" data-bs-target="#assignSubLeaveModal{{ l.id }}">
+                                            <i class="bi bi-person-plus me-1"></i>Appoint Sub
+                                        </button>
+                                        <a href="{{ url_for('handle_leave', id=l.id, action='approve') }}" class="btn btn-sm btn-success p-1" title="Approve Without Sub"><i class="bi bi-check-lg"></i></a>
+                                        <a href="{{ url_for('handle_leave', id=l.id, action='reject') }}" class="btn btn-sm btn-danger p-1" title="Reject"><i class="bi bi-x-lg"></i></a>
+                                        {% elif l.status == 'Approved' %}
+                                        {% if not l.substitute_name or l.substitute_name == 'Unassigned — Admin Action Required' %}
+                                        <button class="btn btn-sm btn-outline-primary py-0 px-2 me-1" title="Assign Substitute" data-bs-toggle="modal" data-bs-target="#assignSubLeaveModal{{ l.id }}">
+                                            <i class="bi bi-person-plus me-1"></i>Assign Sub
+                                        </button>
                                         {% endif %}
+                                        <a href="{{ url_for('handle_leave', id=l.id, action='cancel') }}" class="btn btn-sm btn-outline-danger py-0 px-1" title="Cancel Leave" onclick="return confirm('Cancel this approved leave?')"><i class="bi bi-x-circle me-1"></i>Cancel</a>
+                                        {% endif %}
+                                        <a href="{{ url_for('delete_leave', id=l.id) }}" class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" title="Delete Leave Record" onclick="return confirm('Permanently delete this leave record and restore original timetable schedule?')"><i class="bi bi-trash-fill me-1"></i>Delete</a>
                                     </td>
                                 </tr>
+
+                                <!-- Modal: Appoint Substitute for Specific Leave Request -->
+                                <div class="modal fade" id="assignSubLeaveModal{{ l.id }}" tabindex="-1">
+                                    <div class="modal-dialog">
+                                        <div class="modal-content">
+                                            <form method="POST" action="{{ url_for('assign_substitute_to_leave', id=l.id) }}">
+                                                <div class="modal-header">
+                                                    <h5 class="modal-title fw-bold"><i class="bi bi-person-badge-fill text-primary me-2"></i>Appoint Substitute Faculty</h5>
+                                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                                </div>
+                                                <div class="modal-body row g-3">
+                                                    <div class="col-12">
+                                                        <div class="p-2 bg-light rounded border mb-2 small">
+                                                            Faculty on Leave: <strong>{{ l.faculty_name }}</strong><br>
+                                                            Leave Date: <strong>{{ l.leave_date }}</strong>{% if l.time_slot %} (Period: <strong>{{ l.time_slot }}</strong>){% endif %} &nbsp;|&nbsp; Reason: <em>{{ l.reason }}</em>
+                                                        </div>
+                                                        <label class="form-label fw-semibold">Select Appointed Substitute Faculty (Eligible Only)</label>
+                                                        {% set eligible_list = eligible_subs_by_leave_id.get(l.id, []) %}
+                                                        {% if eligible_list %}
+                                                        <select name="substitute_name" class="form-select" required>
+                                                            <option value="">-- Choose Substitute Faculty --</option>
+                                                            {% for f_opt in eligible_list %}
+                                                            <option value="{{ f_opt.name }}">{{ f_opt.name }} ({{ f_opt.department }} - {{ f_opt.assigned_subject or 'General' }}){% if f_opt.is_exact_match %} ★ Subject Match{% endif %}</option>
+                                                            {% endfor %}
+                                                        </select>
+                                                        <div class="form-text text-muted small mt-1">
+                                                            Only faculty members who are genuinely available without timetable clashes, not on leave, and within permitted workload are shown.
+                                                        </div>
+                                                        {% else %}
+                                                        <div class="alert alert-warning py-2 mb-2 small">
+                                                            <i class="bi bi-exclamation-triangle-fill me-1"></i>No eligible substitute faculty are available during the affected class period(s) without clashes or exceeding workload caps.
+                                                        </div>
+                                                        <select name="substitute_name" class="form-select" disabled>
+                                                            <option value="">No eligible faculty available</option>
+                                                        </select>
+                                                        {% endif %}
+                                                    </div>
+                                                </div>
+                                                <div class="modal-footer">
+                                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                                    <button type="submit" class="btn btn-primary fw-bold" {% if not eligible_list %}disabled{% endif %}>Approve Leave &amp; Appoint Substitute</button>
+                                                </div>
+                                            </form>
+                                        </div>
+                                    </div>
+                                </div>
                                 {% else %}
-                                <tr><td colspan="5" class="text-muted text-center py-3">No leave requests submitted yet.</td></tr>
+                                <tr><td colspan="6" class="text-muted text-center py-3">No leave requests submitted yet.</td></tr>
                                 {% endfor %}
                             </tbody>
                         </table>
                     </div>
+
+                    {% if substitutes %}
+                    <h6 class="fw-bold text-secondary mt-4 mb-2"><i class="bi bi-shield-check me-1"></i>Admin Direct Substitute Appointments</h6>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Regular Faculty</th>
+                                    <th>Substitute</th>
+                                    <th>Subject / Sec</th>
+                                    <th>Day</th>
+                                    <th>Status</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for s in substitutes %}
+                                <tr>
+                                    <td class="fw-bold">{{ s.faculty_name }}</td>
+                                    <td>
+                                        {% if s.substitute_name == 'Unassigned — Admin Action Required' %}
+                                        <span class="badge bg-danger text-white"><i class="bi bi-exclamation-triangle-fill me-1"></i>Unassigned — Admin Action Required</span>
+                                        {% else %}
+                                        <span class="badge bg-warning text-dark">{{ s.substitute_name }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ s.subject or '-' }} {% if s.section %}(Sec {{ s.section }}){% endif %}</td>
+                                    <td>{{ s.day or s.date or 'All Week' }}</td>
+                                    <td>
+                                        <span class="badge {% if s.status == 'Approved' %}bg-success{% elif s.status == 'Cancelled' %}bg-secondary{% else %}bg-warning text-dark{% endif %}">
+                                            {{ s.status }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        {% if s.status == 'Approved' %}
+                                        <a href="{{ url_for('cancel_substitute', id=s.id) }}" class="btn btn-sm btn-outline-danger py-0 px-1" onclick="return confirm('Cancel this substitution appointment?')"><i class="bi bi-x-circle me-1"></i>Cancel</a>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
 
@@ -223,6 +406,72 @@
 
     </div>
 
+    <!-- Modal: Appoint Substitute -->
+    <div class="modal fade" id="appointSubModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form method="POST" action="{{ url_for('appoint_substitute') }}">
+                    <div class="modal-header">
+                        <h5 class="modal-title fw-bold"><i class="bi bi-person-plus-fill text-primary me-2"></i>Appoint Faculty Substitute</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body row g-3">
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Faculty to Substitute For</label>
+                            <select name="faculty_id" class="form-select" required>
+                                <option value="">-- Select Regular Faculty --</option>
+                                {% for f in faculty %}
+                                <option value="{{ f.id }}">{{ f.name }} ({{ f.department }} - {{ f.assigned_subject or 'General' }})</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Appointed Substitute</label>
+                            <select name="substitute_name" class="form-select" required>
+                                <option value="">-- Select Substitute Faculty --</option>
+                                {% for f in faculty %}
+                                <option value="{{ f.name }}">{{ f.name }} ({{ f.department }})</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label fw-semibold">Subject (Optional)</label>
+                            <input type="text" name="subject" class="form-control" placeholder="e.g. Database Systems">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label fw-semibold">Section (Optional)</label>
+                            <select name="section" class="form-select">
+                                <option value="">All Sections</option>
+                                <option value="A">Section A</option>
+                                <option value="B">Section B</option>
+                                <option value="C">Section C</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label fw-semibold">Day (Optional)</label>
+                            <select name="day" class="form-select">
+                                <option value="">All Days</option>
+                                <option value="Mon">Monday</option>
+                                <option value="Tue">Tuesday</option>
+                                <option value="Wed">Wednesday</option>
+                                <option value="Thu">Thursday</option>
+                                <option value="Fri">Friday</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label fw-semibold">Effective Date (Optional)</label>
+                            <input type="date" name="date" class="form-control">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="submit" class="btn btn-primary fw-bold">Appoint Substitute</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal: Add Faculty -->
     <div class="modal fade" id="addFacultyModal" tabindex="-1">
         <div class="modal-dialog">
@@ -233,14 +482,72 @@
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body row g-3">
-                        <div class="col-6"><label class="form-label">Name</label><input type="text" name="name" class="form-control" required></div>
-                        <div class="col-6"><label class="form-label">Email</label><input type="email" name="email" class="form-control" required></div>
-                        <div class="col-6"><label class="form-label">Department</label><input type="text" name="department" class="form-control" required></div>
-                        <div class="col-6"><label class="form-label">Domain</label><input type="text" name="domain" class="form-control"></div>
-                        <div class="col-6"><label class="form-label">Subject</label><input type="text" name="assigned_subject" class="form-control"></div>
-                        <div class="col-3"><label class="form-label">Year</label><input type="text" name="year" class="form-control"></div>
-                        <div class="col-3"><label class="form-label">Section</label><input type="text" name="section" class="form-control"></div>
-                        <div class="col-12"><label class="form-label">Weekly Hours</label><input type="number" name="weekly_hours" class="form-control" value="12"></div>
+                        <div class="col-6"><label class="form-label fw-semibold">Name</label><input type="text" name="name" class="form-control" placeholder="e.g. Dr. John Doe" required></div>
+                        <div class="col-6"><label class="form-label fw-semibold">Email</label><input type="email" name="email" class="form-control" placeholder="e.g. jdoe@icfaitech.in" required></div>
+                        <div class="col-6">
+                            <label class="form-label fw-semibold">Department</label>
+                            <select name="department" class="form-select" required>
+                                <option value="CSE" selected>CSE (Computer Science &amp; Engineering)</option>
+                                <option value="AI_DS">AI_DS (Artificial Intelligence &amp; Data Science)</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label fw-semibold">Assigned Subject</label>
+                            <select name="assigned_subject" id="addSubjectSelect" class="form-select" required>
+                                <option value="">-- Choose Subject --</option>
+                                <option value="Data Structures" data-domain="Algorithms">Data Structures (CS201)</option>
+                                <option value="Database Systems" data-domain="Database">Database Systems (CS202)</option>
+                                <option value="Operating Systems" data-domain="Networks">Operating Systems (CS203)</option>
+                                <option value="Web Development" data-domain="Web Development">Web Development (CS204)</option>
+                                <option value="Machine Learning" data-domain="AI/ML">Machine Learning (CS301)</option>
+                                <option value="Deep Learning" data-domain="AI/ML">Deep Learning (CS302)</option>
+                                <option value="Computer Networks" data-domain="Networks">Computer Networks (CS303)</option>
+                                <option value="Data Science" data-domain="Data Science">Data Science (CS304)</option>
+                                <option value="Cybersecurity" data-domain="Security">Cybersecurity (CS305)</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label fw-semibold">Domain</label>
+                            <select name="domain" id="addDomainSelect" class="form-select" required>
+                                <option value="">-- Choose Domain --</option>
+                                <option value="Algorithms">Algorithms</option>
+                                <option value="Database">Database</option>
+                                <option value="Networks">Networks</option>
+                                <option value="AI/ML">AI/ML</option>
+                                <option value="Web Development">Web Development</option>
+                                <option value="Data Science">Data Science</option>
+                                <option value="Security">Security</option>
+                            </select>
+                        </div>
+                        <div class="col-3">
+                            <label class="form-label fw-semibold">Year</label>
+                            <select name="year" class="form-select" required>
+                                <option value="1">Year 1</option>
+                                <option value="2" selected>Year 2</option>
+                                <option value="3">Year 3</option>
+                                <option value="4">Year 4</option>
+                            </select>
+                        </div>
+                        <div class="col-3">
+                            <label class="form-label fw-semibold">Section</label>
+                            <select name="section" class="form-select" required>
+                                <option value="A" selected>Sec A</option>
+                                <option value="B">Sec B</option>
+                                <option value="C">Sec C</option>
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Weekly Hours</label>
+                            <select name="weekly_hours" class="form-select" required>
+                                <option value="10">10 hrs/week</option>
+                                <option value="11">11 hrs/week</option>
+                                <option value="12" selected>12 hrs/week (Standard Baseline)</option>
+                                <option value="13">13 hrs/week</option>
+                                <option value="14">14 hrs/week</option>
+                                <option value="15">15 hrs/week</option>
+                                <option value="16">16 hrs/week</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button type="submit" class="btn btn-success fw-bold">Add Faculty</button>
@@ -270,6 +577,17 @@
             },
             options: { responsive: true, maintainAspectRatio: false }
         });
+
+        // Auto-select domain when choosing subject in Add Faculty Modal
+        const addSub = document.getElementById('addSubjectSelect');
+        const addDom = document.getElementById('addDomainSelect');
+        if (addSub && addDom) {
+            addSub.addEventListener('change', function() {
+                const opt = this.options[this.selectedIndex];
+                const dom = opt.getAttribute('data-domain');
+                if (dom) { addDom.value = dom; }
+            });
+        }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>

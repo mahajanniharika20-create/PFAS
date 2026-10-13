@@ -79,7 +79,9 @@ def normalize_faculty_record(record: Any) -> dict[str, Any]:
     target_section = str(target_sec_val).strip() if target_sec_val is not None and str(target_sec_val).strip() != "" else None
 
     return {
+        "id": faculty_id,
         "faculty_id": faculty_id,
+        "name": str(faculty_name).strip(),
         "faculty_name": str(faculty_name).strip(),
         "department": str(data.get("department", "")).strip(),
         "domain": norm_domain,
@@ -87,6 +89,8 @@ def normalize_faculty_record(record: Any) -> dict[str, Any]:
         "section": section,
         "allocated_section": allocated_section,
         "target_section": target_section,
+        "year": str(data.get("year", "1")).strip(),
+        "weekly_hours": current_hours,
         "current_weekly_hours": current_hours,
         "weekly_hour_cap": cap_hours,
         "available": data.get("available"),
@@ -97,6 +101,7 @@ def normalize_faculty_record(record: Any) -> dict[str, Any]:
         "qualification": data.get("qualification", data.get("qualifications")),
         "assigned_slots": data.get("assigned_slots", data.get("busy_slots", [])),
         "raw_data": data,
+        "raw_record": data.get("raw_record", data),
     }
 
 
